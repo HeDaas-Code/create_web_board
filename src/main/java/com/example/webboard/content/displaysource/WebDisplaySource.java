@@ -68,7 +68,9 @@ public class WebDisplaySource extends DisplaySource {
 
     @Override
     public List<MutableComponent> provideText(DisplayLinkContext context, DisplayTargetStats stats) {
-        // Compute current lines (for #2: just the placeholder; future sources will do real work).
+        // stats carries the DisplayTargetStats for the target this source is feeding (max rows,
+        // etc.). Not used by this minimal placeholder, but available for future sources that
+        // want to respect per-target line caps.
         List<MutableComponent> rawLines = PLACEHOLDER;
 
         // Flatten to plain strings for the web payload (the browser renders text, not MC Components).

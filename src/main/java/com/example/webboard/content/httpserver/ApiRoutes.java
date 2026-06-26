@@ -27,7 +27,7 @@ public final class ApiRoutes {
             boolean first = true;
             for (BoardContent b : registry.all()) {
                 if (!first) sb.append(',');
-                sb.append(WebSocketHub.toJson(b));
+                sb.append(JsonUtil.boardToJson(b));
                 first = false;
             }
             sb.append(']');
@@ -40,11 +40,11 @@ public final class ApiRoutes {
             BoardContent b = registry.get(name);
             if (b == null) {
                 ctx.status(404);
-                ctx.result("{\"error\":\"board not found: " + WebSocketHub.quote(name) + "\"}");
+                ctx.result("{\"error\":\"board not found: " + JsonUtil.quote(name) + "\"}");
                 return;
             }
             ctx.contentType("application/json");
-            ctx.result(WebSocketHub.toJson(b));
+            ctx.result(JsonUtil.boardToJson(b));
         });
 
         app.get("/api/health", ctx -> {

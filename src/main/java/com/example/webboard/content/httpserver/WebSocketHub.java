@@ -52,7 +52,7 @@ public class WebSocketHub {
             boolean first = true;
             for (var b : registry.all()) {
                 if (!first) sb.append(',');
-                sb.append(toJson(b));
+                sb.append(JsonUtil.boardToJson(b));
                 first = false;
             }
             sb.append("]}");
@@ -64,8 +64,8 @@ public class WebSocketHub {
 
     private void onChange(ChangeEvent ev) {
         String json = switch (ev) {
-            case ChangeEvent.Put put -> "{\"type\":\"update\",\"board\":" + toJson(put.content()) + "}";
-            case ChangeEvent.Remove rm -> "{\"type\":\"remove\",\"name\":" + quote(rm.name()) + "}";
+            case ChangeEvent.Put put -> "{\"type\":\"update\",\"board\":" + JsonUtil.boardToJson(put.content()) + "}";
+            case ChangeEvent.Remove rm -> "{\"type\":\"remove\",\"name\":" + JsonUtil.quote(rm.name()) + "}";
         };
         for (WsContext s : sessions) {
             try {
@@ -75,43 +75,5 @@ public class WebSocketHub {
                 // Don't manually close here — let Javalin's onClose hook clean up.
             }
         }
-    }
-
-    /** Minimal hand-rolled JSON to avoid pulling in Jackson for two record types. */
-    static String toJson(com.example.webboard.content.registry.BoardContent b) {
-        StringBuilder sb = new StringBuilder("{\"name\":").append(quote(b.name()))
-                .append(",\"sourceType\":").append(quote(b.sourceType()))
-                .append(",\"lines\":[");
-        boolean first = true;
-        for (String line : b.lines()) {
-            if (!first) sb.append(',');
-            sb.append(quote(line));
-            first = false;
-        }
-        sb.append("],\"lastUpdatedMs\":").append(b.lastUpdatedMs()).append('}');
-        return sb.toString();
-    }
-
-    /** Quote-escape a string for JSON. */
-    static String quote(String s) {
-        if (s == null) return "null";
-        StringBuilder sb = new StringBuilder(s.length() + 2);
-        sb.append('"');
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            switch (c) {
-                case '"'  -> sb.append("\\\"");
-                case '\\' -> sb.append("\\\\");
-                case '\n' -> sb.append("\\n");
-                case '\r' -> sb.append("\\r");
-                case '\t' -> sb.append("\\t");
-                default -> {
-                    if (c < 0x20) sb.append(String.format("\\u%04x", (int) c));
-                    else sb.append(c);
-                }
-            }
-        }
-        sb.append('"');
-        return sb.toString();
     }
 }
