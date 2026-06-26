@@ -44,6 +44,17 @@ public class HttpServer {
             return;
         }
         app = Javalin.create(cfg -> {
+            // Same classpath directory served on two paths:
+            //   "/"   → http://127.0.0.1:8080/      resolves to web/index.html
+            //   "/static/*" → http://127.0.0.1:8080/static/* for explicit asset URLs
+            // Javalin 6 requires distinct static-file entries for distinct hosted paths
+            // (it does not auto-merge two paths to the same directory).
+            cfg.staticFiles.add(staticDir -> {
+                staticDir.hostedPath = "/";
+                staticDir.directory = "/assets/create_web_board/web";
+                staticDir.location = Location.CLASSPATH;
+                staticDir.skipFileFunction = req -> false;  // serve index.html on "/"
+            });
             cfg.staticFiles.add(staticDir -> {
                 staticDir.hostedPath = "/static";
                 staticDir.directory = "/assets/create_web_board/web";

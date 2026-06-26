@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Create Web Board</title>
+    <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+    <header class="topbar">
+        <span class="brand">
+            <span class="brand-mark">CB</span>
+            <span class="brand-text">Create Web Board</span>
+        </span>
+        <span class="status" id="status">
+            <span class="dot dot-off" id="status-dot"></span>
+            <span id="status-text">disconnected</span>
+        </span>
+        <span class="meta" id="meta">0 boards · 0 ws</span>
+    </header>
+
+    <main class="layout">
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <span>Boards</span>
+                <span class="badge" id="board-count">0</span>
+            </div>
+            <ul class="board-list" id="board-list">
+                <li class="empty">No boards yet. Place a Display Link in-world.</li>
+            </ul>
+        </aside>
+
+        <section class="main">
+            <div class="main-header" id="main-header">
+                <h2 id="selected-name">Select a board</h2>
+                <span class="source" id="selected-source"></span>
+            </div>
+            <pre class="board-content" id="board-content">// click a board on the left to view its live content</pre>
+            <div class="main-footer" id="main-footer">
+                <span id="updated">—</span>
+            </div>
+        </section>
+    </main>
+
+    <script src="/app.js"></script>
+</body>
+</html>
