@@ -101,6 +101,10 @@ sourceSets.main {
 // shipped jar. slf4j-simple is testRuntimeOnly only (production uses MC's Log4j2 binding).
 dependencies {
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    // Gradle's test worker needs the platform launcher on the runtime classpath
+    // (junit-jupiter alone only pulls engine + API, not the launcher Gradle uses
+    //  to discover and execute tests).
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.10.2'
     testRuntimeOnly  'org.slf4j:slf4j-simple:2.0.9'
 }
 
