@@ -1,5 +1,6 @@
 package com.example.webboard;
 
+import com.example.webboard.content.displaysource.WebDisplaySource;
 import com.example.webboard.registry.ModBlockEntities;
 import com.example.webboard.registry.ModBlocks;
 import com.example.webboard.registry.ModItems;
@@ -28,7 +29,11 @@ public class CreateWebBoard {
         // Bind the recipe DeferredRegisters to the mod bus.
         ModRecipes.registerToBus(modBus);
 
-        // Issue #1 scope: DisplaySource registration lives here.
+        // Issue #1: register WebDisplaySource via CreateRegistrate.displaySource().
+        // The .register() call is what writes into Create's DISPLAY_SOURCE registry; without
+        // it, the source is built but never visible to Display Link's "Configure" screen.
+        REGISTRATE.displaySource(WebDisplaySource.ID, WebDisplaySource::new).register();
+
         // Issue #2 scope: HTTP server lifecycle (start/stop) will be wired to FMLCommonSetupEvent.
         // Order matters: blocks before block-entities (the block-entity block() chain
         // references the block's RegistryObject lazily, so build order is enforced at register time).
