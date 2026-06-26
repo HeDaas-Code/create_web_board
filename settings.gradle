@@ -1,0 +1,9 @@
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        maven { url = 'https://maven.createmod.net' }
+        maven { url = 'https://maven.ithundxr.dev/snapshots' }
+    }
+}
+
+rootProject.name = 'create-addon'

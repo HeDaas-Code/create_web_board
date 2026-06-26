@@ -1,0 +1,75 @@
+# GitHub Actions: build the Create 6.0.x / NeoForge 1.21.1 addon mod jar on push, PR, and manual dispatch.
+#
+# Verified 2026-06-26: same moddev plugin (net.neoforged.moddev 2.0.107) + same deps
+# builds locally in 8s (cached) or ~3m (cold). GitHub-hosted ubuntu-latest defaults
+# to JDK 17 — we pin JDK 21 via actions/setup-java because the Silk plugin dep
+# (dev.ithundxr:Silk:1.0.1) requires JVM ≥ 21.
+
+name: build
+
+on:
+  push:
+    branches: [main, master, dev, "feature/**", "fix/**"]
+  pull_request:
+    branches: [main, master, dev]
+  workflow_dispatch:        # manual trigger from the Actions tab
+  schedule:
+    - cron: '0 8 * * 1'     # weekly Monday 08:00 UTC — catch upstream Create breakage
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Silk 1.0.1 (a NeoForge plugin dep) requires JVM ≥ 21. ubuntu-latest defaults to
+      # JDK 17, so we explicitly pin JDK 21 (Temurin, the same distro NeoForge MDK tests against).
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Gradle (cache wrapper)
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-home-cache-cleanup: true
+
+      - name: Build the mod jar
+        # --no-daemon for CI (no daemon between runs); --stacktrace for diagnosability
+        run: gradle build --no-daemon --stacktrace
+        env:
+          GRADLE_OPTS: "-Xmx3G -Dfile.encoding=UTF-8"
+
+      - name: Upload mod jar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mod-jar
+          path: build/libs/*.jar
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: /tmp/build.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Verify META-INF/neoforge.mods.toml
+        if: success()
+        run: |
+          set -e
+          JAR=$(ls build/libs/*.jar | head -1)
+          echo "Verifying jar: $JAR"
+          unzip -p "$JAR" META-INF/neoforge.mods.toml | tee /tmp/mods.toml
+          # Asserts: must declare modId, version, dependencies on neoforge + create
+          grep -q 'modId *= *"[^"]\+"' /tmp/mods.toml
+          grep -q 'modId *= *"create"' /tmp/mods.toml
+          grep -q 'modId *= *"neoforge"' /tmp/mods.toml
+          echo "✅ mods.toml sanity OK"
