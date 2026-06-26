@@ -1,6 +1,7 @@
 package com.example.webboard.content.lifecycle;
 
 import com.example.webboard.CreateWebBoard;
+import com.example.webboard.content.httpserver.ConfigLoader;
 import com.example.webboard.content.httpserver.HttpServer;
 import com.example.webboard.content.httpserver.ServerConfig;
 
@@ -33,7 +34,21 @@ public final class ServerLifecycle {
             CreateWebBoard.LOGGER.warn("[web_board] HTTP server already running; not starting a second instance");
             return;
         }
-        httpServer = new HttpServer(ServerConfig.defaults(), com.example.webboard.content.registry.BoardRegistry.get());
+        // Issue #4: load host/port from webboard-server.toml (next to mods.toml) if present.
+        // The path is the running server's config dir; we don't have a direct handle from this
+        // event signature, so we fall back to a well-known relative path. Operators can also
+        // override port at runtime via a system property (useful for tests).
+        var configPath = java.nio.file.Path.of("config", "webboard-server.toml");
+        ServerConfig cfg = ConfigLoader.load(configPath);
+        String portOverride = System.getProperty("webboard.port");
+        if (portOverride != null) {
+            try {
+                cfg = cfg.withPort(Integer.parseInt(portOverride));
+            } catch (NumberFormatException ignored) { /* keep loaded port */ }
+        }
+        // Fresh server start → clear any boards left over from a previous run.
+        com.example.webboard.content.registry.BoardRegistry.get().clearAll();
+        httpServer = new HttpServer(cfg, com.example.webboard.content.registry.BoardRegistry.get());
         try {
             httpServer.start();
         } catch (Exception e) {

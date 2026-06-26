@@ -1,6 +1,7 @@
 package com.example.webboard.content.registry;
 
 import java.util.Collection;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArraySet;
@@ -48,6 +49,21 @@ public final class BoardRegistry {
         BoardContent removed = boards.remove(name);
         if (removed != null) {
             listeners.forEach(l -> l.accept(new ChangeEvent.Remove(name)));
+        }
+    }
+
+    /**
+     * Remove all boards. Fires a {@link ChangeEvent.Remove} for every entry. Used at
+     * server-stop so a fresh server start doesn't display stale board names from the
+     * previous session.
+     */
+    public void clearAll() {
+        // Snapshot keys first — listeners may call get()/all() during iteration.
+        for (String name : List.copyOf(boards.keySet())) {
+            BoardContent removed = boards.remove(name);
+            if (removed != null) {
+                listeners.forEach(l -> l.accept(new ChangeEvent.Remove(name)));
+            }
         }
     }
 

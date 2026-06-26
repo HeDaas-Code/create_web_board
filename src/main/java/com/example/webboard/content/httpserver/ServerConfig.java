@@ -1,15 +1,20 @@
 package com.example.webboard.content.httpserver;
 
 /**
- * ServerConfig — simple holder for HTTP server settings.
+ * ServerConfig — HTTP server settings, immutable.
  *
- * <p>Issue #4 will replace this with a TOML-backed config (using NeoForge's ConfigBuilder or
- * JomlConfig). For #2, hardcoded defaults are fine — they're trivially overridable later.
+ * <p>Defaults are localhost-only on port 8080 — never expose publicly. Issue #4 adds TOML
+ * loading via {@link ConfigLoader}; the record itself stays minimal.
  */
-public record ServerConfig(String host, int port) {
+public record ServerConfig(String host, int port, int maxWsConnections) {
 
     /** Default config: localhost-only on port 8080. */
     public static ServerConfig defaults() {
-        return new ServerConfig("127.0.0.1", 8080);
+        return new ServerConfig("127.0.0.1", 8080, 16);
+    }
+
+    /** Returns a copy with a different port (used by tests for ephemeral port assignment). */
+    public ServerConfig withPort(int newPort) {
+        return new ServerConfig(host, newPort, maxWsConnections);
     }
 }

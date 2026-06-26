@@ -94,6 +94,28 @@ sourceSets.main {
     }
 }
 
+// Issue #4: JUnit 5 for the integration tests. Main classpath is the MC mod classpath
+// (Create + NeoForge), but the tests do not need any of that — they exercise HttpServer
+// (Javalin) and ConfigLoader (plain Java) directly. We declare the test deps in the
+// `testImplementation` / `testRuntimeOnly` configurations so they never leak into the
+// shipped jar. slf4j-simple is testRuntimeOnly only (production uses MC's Log4j2 binding).
+dependencies {
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    testRuntimeOnly  'org.slf4j:slf4j-simple:2.0.9'
+}
+
+test {
+    useJUnitPlatform()
+    // Log4j-free tests need to know the server started, not silent failures.
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+        showStandardStreams = false
+        exceptionFormat = 'full'
+    }
+    // Javalin/Jetty are chatty on WARN during port-bind retries; silence by default.
+    systemProperty 'org.slf4j.simpleLogger.defaultLogLevel', 'warn'
+}
+
 jar {
     manifest {
         attributes([

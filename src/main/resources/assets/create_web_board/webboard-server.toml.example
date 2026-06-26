@@ -1,0 +1,15 @@
+# webboard-server.toml — Create Web Board server config
+# Place this file in your Minecraft server's `config/` directory.
+# Issue #4 adds this; the file is optional. Without it, defaults below are used.
+
+[server]
+# Host to bind to. Default "127.0.0.1" (localhost only — do NOT expose to the internet;
+# the dashboard has no authentication).
+host = "127.0.0.1"
+
+# Port to bind to. Default 8080.
+port = 8080
+
+# Maximum concurrent WebSocket connections. Default 16. The dashboard is designed for
+# one operator; bump this only if you really need multiple browser tabs.
+maxWsConnections = 16
