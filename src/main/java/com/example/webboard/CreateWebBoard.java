@@ -35,8 +35,11 @@ public class CreateWebBoard {
         REGISTRATE.displaySource(WebDisplaySource.ID, WebDisplaySource::new).register();
 
         // Issue #2 scope: HTTP server lifecycle (start/stop) will be wired to FMLCommonSetupEvent.
-        // Order matters: blocks before block-entities (the block-entity block() chain
-        // references the block's RegistryObject lazily, so build order is enforced at register time).
+        //
+        // Registration order rationale (matters because of CreateRegistrate.entry() holding
+        // lazy RegistryObject refs): all REGISTRATE.entry() calls (including the displaySource
+        // above) must come BEFORE the DeferredRegister batches (ModBlocks/Items/etc.) so that
+        // when any builder's onRegisterAfter hook fires, the entry is already finalized.
         ModBlocks.register();
         ModBlockEntities.register();
         ModItems.register();
