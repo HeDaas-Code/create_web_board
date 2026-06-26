@@ -1,5 +1,6 @@
 package com.example.webboard;
 
+import com.example.webboard.content.displaysource.BlockEntitySummaryDisplaySource;
 import com.example.webboard.content.displaysource.WebDisplaySource;
 import com.simibubi.create.foundation.data.CreateRegistrate;
 import net.neoforged.bus.api.IEventBus;
@@ -8,29 +9,30 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Create 6.0.10 addon: a Display Link source that mirrors each link to a local
+ * Create 6.0.10 addon: two DisplaySources that mirror Display Link state to a local
  * browser dashboard in real time. Pin to Create 6.0.10 / NeoForge 21.1.219 / MC 1.21.1.
  *
- * <p>Boot order is intentionally minimal — the only registered thing is the
- * {@link WebDisplaySource}, registered through CreateRegistrate's
- * {@code displaySource(name, supplier).register()} fluent chain.
+ * <p>Registered sources:
+ * <ul>
+ *   <li>{@link WebDisplaySource} — placeholder, ID-based registration</li>
+ *   <li>{@link BlockEntitySummaryDisplaySource} — reads source BE state, ID-based</li>
+ * </ul>
  */
 @Mod(CreateWebBoard.MOD_ID)
 public class CreateWebBoard {
     public static final String MOD_ID = "create_web_board";
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
-    // CreateRegistrate = Registrate + a couple of Create-specific helpers (displaySource, etc.).
     public static final CreateRegistrate REGISTRATE = CreateRegistrate.create(MOD_ID);
 
     public CreateWebBoard(IEventBus modBus) {
         REGISTRATE.registerEventListeners(modBus);
 
-        // Register the DisplaySource. The .register() call is what writes into Create's
-        // DISPLAY_SOURCE registry; without it, the source is built but never visible to
-        // Display Link's "Configure" screen.
+        // Both sources write to the same BoardRegistry → single web dashboard sees both.
+        // .register() is what writes into Create's DISPLAY_SOURCE registry.
         REGISTRATE.displaySource(WebDisplaySource.ID, WebDisplaySource::new).register();
+        REGISTRATE.displaySource(BlockEntitySummaryDisplaySource.ID, BlockEntitySummaryDisplaySource::new).register();
 
-        LOGGER.info("[{}] loaded — Display Link → web dashboard bridge", MOD_ID);
+        LOGGER.info("[{}] loaded — 2 DisplaySources → web dashboard bridge", MOD_ID);
     }
 }
