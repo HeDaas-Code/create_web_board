@@ -6,8 +6,7 @@ import com.simibubi.create.content.redstone.displayLink.DisplayLinkBlockEntity;
 import com.simibubi.create.content.redstone.displayLink.DisplayLinkScreen;
 import com.simibubi.create.foundation.gui.AllGuiTextures;
 import net.minecraft.client.gui.components.Button;
-import net.minecraft.client.gui.components.Renderable;
-import net.minecraft.client.gui.components.events.GuiEventListener;
+import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
 import org.spongepowered.asm.mixin.Mixin;
@@ -22,9 +21,24 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * is stashed in the link's source-config ({@link WebMirror#NBT_KEY}) by mutating the
  * {@code sourceData} CompoundTag right before Create builds its configuration packet in
  * {@code onClose} — reusing Create's own packet, no custom networking.
+ *
+ * <p><b>Why this mixin extends {@link Screen}</b>: {@code addRenderableWidget} is a
+ * protected method declared on vanilla {@code Screen} and inherited by
+ * {@code DisplayLinkScreen} (via {@code AbstractSimiScreen}). Shadowing an inherited
+ * method with {@code @Shadow} is unreliable — when the refmap fails to load
+ * (issue #7: "No refMap loaded"), the SRG→deobf name lookup fails and the mixin
+ * crashes the whole Create ecosystem. By extending {@code Screen} directly, the
+ * method is callable without any {@code @Shadow} or refmap involvement.
+ *
+ * <p>{@code guiLeft}/{@code guiTop} are mod-member fields ({@code AbstractSimiScreen})
+ * so they keep {@code @Shadow(remap = false)} — mod members don't need the refmap.
  */
 @Mixin(DisplayLinkScreen.class)
-public abstract class DisplayLinkScreenMixin {
+public abstract class DisplayLinkScreenMixin extends Screen {
+
+    private DisplayLinkScreenMixin() {
+        super(Component.empty());
+    }
 
     @Shadow(remap = false)
     private AllGuiTextures background;
@@ -37,9 +51,6 @@ public abstract class DisplayLinkScreenMixin {
 
     @Shadow(remap = false)
     protected int guiTop;
-
-    @Shadow
-    protected abstract <T extends GuiEventListener & Renderable> T addRenderableWidget(T widget);
 
     @Unique
     private boolean createWebBoard$webSynced = false;
