@@ -365,6 +365,15 @@
         }
     }
 
+    /**
+     * Render the board's history. Tries to visualize it as an SVG line chart:
+     * for each line index, extract the first parseable number from every snapshot
+     * and draw it as a trend line over time. Falls back to a collapsible raw
+     * snapshot list when no numeric series can be built (e.g. pure-text boards).
+     *
+     * Zero dependencies — the chart is hand-drawn SVG so it works offline on
+     * the localhost dashboard (no CDN, keeps the mod jar slim).
+     */
     function renderHistory(list) {
         els.historyBox.innerHTML = "";
         if (!list || list.length === 0) {
@@ -373,8 +382,192 @@
             return;
         }
         els.historyCount.textContent = "共 " + list.length + " 条";
-        // Newest first is more useful for scanning recent changes.
+
         const frag = document.createDocumentFragment();
+        const series = buildNumericSeries(list);
+
+        if (series.length > 0) {
+            frag.appendChild(renderChart(series));
+        } else {
+            const noChart = document.createElement("div");
+            noChart.className = "hist-empty";
+            noChart.textContent = "（历史内容无可提取数值，下方为原始快照）";
+            frag.appendChild(noChart);
+        }
+
+        // Always keep the raw snapshots as a collapsible fallback / detail view.
+        frag.appendChild(renderRawSnapshots(list));
+        els.historyBox.appendChild(frag);
+    }
+
+    /** First number (int or decimal, optional sign) found in a line, or null. */
+    const NUM_RE = /-?\d+(?:\.\d+)?/;
+
+    /**
+     * Build numeric series from history. For each line index i, collect
+     * {ts, value} across all snapshots by matching the first number in lines[i].
+     * A line becomes a series only if >= 2 snapshots yield a number for it.
+     * Missing values are forward-filled (and leading nulls trimmed) so lines
+     * stay continuous. Label is the line's text in the latest snapshot.
+     */
+    function buildNumericSeries(list) {
+        let maxLines = 0;
+        list.forEach((he) => { if (he.lines) maxLines = Math.max(maxLines, he.lines.length); });
+        const series = [];
+        for (let i = 0; i < maxLines; i++) {
+            const points = [];
+            let valid = 0;
+            let lastLabel = "";
+            list.forEach((he) => {
+                const line = he.lines && he.lines[i];
+                if (line == null) { points.push({ ts: he.ts, value: null }); return; }
+                lastLabel = line;
+                const m = line.match(NUM_RE);
+                if (m) { points.push({ ts: he.ts, value: parseFloat(m[0]) }); valid++; }
+                else points.push({ ts: he.ts, value: null });
+            });
+            if (valid < 2) continue;
+            // forward-fill, then trim leading nulls (can't back-fill what we never saw)
+            let lastVal = null;
+            for (let k = 0; k < points.length; k++) {
+                if (points[k].value != null) lastVal = points[k].value;
+                else if (lastVal != null) points[k].value = lastVal;
+            }
+            let start = 0;
+            while (start < points.length && points[start].value == null) start++;
+            const trimmed = points.slice(start);
+            if (trimmed.length < 2) continue;
+            series.push({ label: truncate(lastLabel, 28), points: trimmed });
+        }
+        return series;
+    }
+
+    function truncate(s, n) {
+        if (!s) return "";
+        return s.length > n ? s.slice(0, n - 1) + "…" : s;
+    }
+
+    /** Escape a string for safe insertion into SVG/HTML text content. */
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, (c) =>
+            ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+
+    function chartColor(i) {
+        // Palette tuned for the dark theme — distinct, colorblind-friendlier hues.
+        const palette = ["#FAA21B", "#4ec9b0", "#5aa9ff", "#f48771", "#c084fc", "#facc15"];
+        return palette[i % palette.length];
+    }
+
+    function formatNum(v) {
+        if (Math.abs(v) >= 10000) return (v / 1000).toFixed(1) + "k";
+        if (Number.isInteger(v)) return String(v);
+        return v.toFixed(2);
+    }
+
+    /** Build the legend + SVG line chart for the given series. */
+    function renderChart(series) {
+        const wrap = document.createElement("div");
+        wrap.className = "hist-chart-wrap";
+
+        const legend = document.createElement("div");
+        legend.className = "chart-legend";
+        series.forEach((s, idx) => {
+            const item = document.createElement("span");
+            item.className = "legend-item";
+            item.title = s.label;
+            const sw = document.createElement("span");
+            sw.className = "legend-swatch";
+            sw.style.background = chartColor(idx);
+            const label = document.createElement("span");
+            label.className = "legend-label";
+            label.textContent = s.label;
+            item.appendChild(sw);
+            item.appendChild(label);
+            legend.appendChild(item);
+        });
+        wrap.appendChild(legend);
+
+        wrap.appendChild(renderChartSvg(series));
+        return wrap;
+    }
+
+    /** Hand-drawn SVG line chart. viewBox is fixed; CSS scales it to container width. */
+    function renderChartSvg(series) {
+        const W = 800, H = 260;
+        const padL = 52, padR = 14, padT = 14, padB = 32;
+        const plotW = W - padL - padR;
+        const plotH = H - padT - padB;
+
+        let tsMin = Infinity, tsMax = -Infinity, vMin = Infinity, vMax = -Infinity;
+        series.forEach((s) => s.points.forEach((p) => {
+            if (p.ts < tsMin) tsMin = p.ts;
+            if (p.ts > tsMax) tsMax = p.ts;
+            if (p.value < vMin) vMin = p.value;
+            if (p.value > vMax) vMax = p.value;
+        }));
+        if (tsMin === tsMax) tsMax = tsMin + 1; // single-point guard
+        if (vMin === vMax) vMax = vMin + 1;
+        const vRange = vMax - vMin;
+        vMin -= vRange * 0.1; vMax += vRange * 0.1; // 10% headroom
+
+        const xOf = (ts) => padL + (ts - tsMin) / (tsMax - tsMin) * plotW;
+        const yOf = (v) => padT + plotH - (v - vMin) / (vMax - vMin) * plotH;
+
+        const parts = [];
+        parts.push('<svg class="hist-chart" viewBox="0 0 ' + W + " " + H +
+            '" preserveAspectRatio="xMidYMid meet" role="img" aria-label="历史数值折线图">');
+
+        // Y gridlines + labels (min / mid / max)
+        [vMin, vMin + (vMax - vMin) / 2, vMax].forEach((v) => {
+            const y = yOf(v);
+            parts.push('<line class="chart-grid" x1="' + padL + '" y1="' + y +
+                '" x2="' + (W - padR) + '" y2="' + y + '"/>');
+            parts.push('<text class="chart-axis-label" x="' + (padL - 6) + '" y="' + (y + 3) +
+                '" text-anchor="end">' + formatNum(v) + "</text>");
+        });
+        // X labels (first / mid / last timestamp)
+        [tsMin, tsMin + (tsMax - tsMin) / 2, tsMax].forEach((ts) => {
+            const x = xOf(ts);
+            parts.push('<text class="chart-axis-label" x="' + x + '" y="' + (H - padB + 16) +
+                '" text-anchor="middle">' + formatTime(ts) + "</text>");
+        });
+        // Axes
+        parts.push('<line class="chart-axis" x1="' + padL + '" y1="' + padT +
+            '" x2="' + padL + '" y2="' + (H - padB) + '"/>');
+        parts.push('<line class="chart-axis" x1="' + padL + '" y1="' + (H - padB) +
+            '" x2="' + (W - padR) + '" y2="' + (H - padB) + '"/>');
+
+        // Series polylines + points (with native <title> tooltips on hover)
+        series.forEach((s, idx) => {
+            const color = chartColor(idx);
+            const pts = s.points.map((p) => xOf(p.ts) + "," + yOf(p.value)).join(" ");
+            parts.push('<polyline class="chart-line" points="' + pts +
+                '" fill="none" stroke="' + color + '"/>');
+            s.points.forEach((p) => {
+                parts.push('<circle class="chart-point" cx="' + xOf(p.ts) + '" cy="' + yOf(p.value) +
+                    '" r="3" fill="' + color + '"><title>' +
+                    escapeHtml(s.label) + " · " + formatTime(p.ts) + " · " + formatNum(p.value) +
+                    "</title></circle>");
+            });
+        });
+
+        parts.push("</svg>");
+        const div = document.createElement("div");
+        div.innerHTML = parts.join("");
+        return div.firstElementChild;
+    }
+
+    /** Collapsible raw snapshot list (newest-first), kept as a fallback detail view. */
+    function renderRawSnapshots(list) {
+        const det = document.createElement("details");
+        det.className = "hist-raw";
+        const sum = document.createElement("summary");
+        sum.textContent = "原始快照（" + list.length + "）";
+        det.appendChild(sum);
+
+        const box = document.createElement("div");
+        box.className = "hist-raw-list";
         for (let i = list.length - 1; i >= 0; i--) {
             const he = list[i];
             const item = document.createElement("div");
@@ -406,9 +599,10 @@
 
             item.appendChild(head);
             item.appendChild(ol);
-            frag.appendChild(item);
+            box.appendChild(item);
         }
-        els.historyBox.appendChild(frag);
+        det.appendChild(box);
+        return det;
     }
 
     async function saveDisplayName() {

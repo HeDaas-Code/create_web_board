@@ -606,8 +606,8 @@ html, body {
 .modal-history {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    max-height: 260px;
+    gap: 10px;
+    max-height: 380px;
     overflow: auto;
     padding-right: 2px;
 }
@@ -669,6 +669,104 @@ html, body {
     text-align: right;
     color: var(--text-3);
     font-size: 10px;
+}
+
+/* ---------- History chart (hand-drawn SVG, no deps) ---------- */
+
+.hist-chart-wrap {
+    border: 1px solid var(--border-soft);
+    border-radius: 8px;
+    background: var(--bg-0);
+    padding: 10px 12px 6px;
+}
+.chart-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    margin-bottom: 6px;
+}
+.legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 100%;
+    font-size: 11px;
+    color: var(--text-1);
+}
+.legend-swatch {
+    flex: 0 0 auto;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+}
+.legend-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.hist-chart {
+    width: 100%;
+    height: auto;
+    display: block;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.chart-grid {
+    stroke: var(--border-soft);
+    stroke-width: 1;
+    stroke-dasharray: 2 3;
+}
+.chart-axis {
+    stroke: var(--border);
+    stroke-width: 1;
+}
+.chart-axis-label {
+    fill: var(--text-2);
+    font-size: 10px;
+}
+.chart-line {
+    stroke-width: 1.8;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+}
+.chart-point {
+    stroke: var(--bg-0);
+    stroke-width: 1;
+    cursor: help;
+    transition: r 0.1s;
+}
+.chart-point:hover {
+    r: 4.5;
+}
+
+/* Collapsible raw snapshot list under the chart */
+.hist-raw {
+    border: 1px solid var(--border-soft);
+    border-radius: 8px;
+    background: var(--bg-0);
+}
+.hist-raw > summary {
+    cursor: pointer;
+    padding: 7px 12px;
+    font-size: 11px;
+    color: var(--text-2);
+    user-select: none;
+    list-style: none;
+}
+.hist-raw > summary::-webkit-details-marker { display: none; }
+.hist-raw > summary::before {
+    content: "▸";
+    display: inline-block;
+    margin-right: 6px;
+    color: var(--text-3);
+    transition: transform 0.12s;
+}
+.hist-raw[open] > summary::before { content: "▾"; }
+.hist-raw-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 0 8px 8px;
 }
 
 .modal-foot {
