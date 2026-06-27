@@ -80,11 +80,40 @@ dependencies {
     jarJar(implementation("com.tterrag.registrate:Registrate:${registrate_version}"))
 
     // HTTP server + JSON — used by issues #2/#3 to expose DisplayLink state to localhost browser.
-    // NOTE on SLF4J: do NOT add slf4j-simple. NeoForge pins `slf4j-api:2.0.9` strictly, while
-    // Javalin 6.3.0 wants 2.0.16. Gradle's strict resolution rejects the conflict.
-    // Strategy: let Javalin/Jetty log to SLF4J; MC's bundled Log4j2 binds SLF4J at runtime
-    // (so non-critical debug lines from Jetty get printed via Log4j). No slf4j-simple needed.
-    implementation("io.javalin:javalin:${javalin_version}")
+    //
+    // Issue #5 (runtime crash): these MUST be `jarJar(implementation(...))`, not bare
+    // `implementation(...)`. moddev's `implementation` configuration is dev-time only —
+    // the runtime shipped jar does NOT include implementation deps, leading to
+    // `NoClassDefFoundError: io/javalin/websocket/WsContext` when MC's classloader tries
+    // to load the server in a real world. The `jarJar(...)` wrapper packs the dep into
+    // the shipped jar (jar-in-jar) so the class is available at runtime.
+    //
+    // Subtle: moddev's jarJar is **root-only** (verified via JarJarArtifacts.class
+    // bytecode — `includedRootComponents` set property). Transitive deps of a jarJar'd
+    // dep are NOT auto-embedded. So we explicitly list Javalin + every Jetty / Jakarta
+    // transitive it needs. (Adding a fat-jar in one line is not supported by moddev;
+    // the official approach is one `jarJar` per direct dep.) See:
+    //   https://docs.neoforged.net/toolchain/docs/plugins/mdg/#jar-jar
+    //
+    // SLF4J: still force 2.0.9 below (Javalin 6.3.0 wants 2.0.16, NeoForge pins 2.0.9).
+    // At runtime, MC's bundled Log4j2 binds SLF4J — so Jetty's debug logs route through
+    // Log4j. No slf4j-simple needed (would conflict with Log4j binding).
+    jarJar(implementation("io.javalin:javalin:${javalin_version}"))
+    jarJar(implementation("org.eclipse.jetty:jetty-server:${jetty_version}"))
+    jarJar(implementation("org.eclipse.jetty:jetty-util:${jetty_version}"))
+    jarJar(implementation("org.eclipse.jetty:jetty-io:${jetty_version}"))
+    jarJar(implementation("org.eclipse.jetty:jetty-http:${jetty_version}"))
+    jarJar(implementation("org.eclipse.jetty:jetty-servlet:${jetty_version}"))
+    jarJar(implementation("org.eclipse.jetty:jetty-security:${jetty_version}"))
+    jarJar(implementation("org.eclipse.jetty:jetty-webapp:${jetty_version}"))
+    jarJar(implementation("org.eclipse.jetty:jetty-xml:${jetty_version}"))
+    jarJar(implementation("org.eclipse.jetty.websocket:websocket-jetty-server:${jetty_version}"))
+    jarJar(implementation("org.eclipse.jetty.websocket:websocket-jetty-common:${jetty_version}"))
+    jarJar(implementation("org.eclipse.jetty.websocket:websocket-jetty-api:${jetty_version}"))
+    jarJar(implementation("org.eclipse.jetty.websocket:websocket-core-server:${jetty_version}"))
+    jarJar(implementation("org.eclipse.jetty.websocket:websocket-core-common:${jetty_version}"))
+    jarJar(implementation("org.eclipse.jetty.websocket:websocket-servlet:${jetty_version}"))
+    jarJar(implementation("org.eclipse.jetty.toolchain:jetty-jakarta-servlet-api:5.0.2"))
 }
 
 sourceSets.main {
