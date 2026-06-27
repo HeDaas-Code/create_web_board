@@ -70,9 +70,44 @@ public final class BoardRegistry {
         if (existing == null) return;
         BoardContent renamed = new BoardContent(
                 existing.name(), newDisplayName, existing.sourceType(),
-                existing.lines(), existing.lastUpdatedMs());
+                existing.lines(), existing.lastUpdatedMs(),
+                existing.tags(), existing.itemIds());
         boards.put(name, renamed);
         listeners.forEach(l -> l.accept(new ChangeEvent.Put(renamed)));
+    }
+
+    /**
+     * Replace a board's tag set. Tags are free-text labels used by the dashboard to cluster
+     * boards into groups; a board may carry several. The stable {@code name} key and all other
+     * fields are preserved. Fires a {@link ChangeEvent.Put} so WS clients re-render.
+     * No-op if the board isn't tracked.
+     */
+    public void setTags(String name, List<String> tags) {
+        BoardContent existing = boards.get(name);
+        if (existing == null) return;
+        BoardContent updated = new BoardContent(
+                existing.name(), existing.displayName(), existing.sourceType(),
+                existing.lines(), existing.lastUpdatedMs(),
+                List.copyOf(tags), existing.itemIds());
+        boards.put(name, updated);
+        listeners.forEach(l -> l.accept(new ChangeEvent.Put(updated)));
+    }
+
+    /**
+     * Replace a board's associated product item ids (e.g. {@code minecraft:iron_ingot}).
+     * Used by the dashboard to show a thumbnail per product on the card. The stable key and all
+     * other fields are preserved. Fires a {@link ChangeEvent.Put} so WS clients re-render.
+     * No-op if the board isn't tracked.
+     */
+    public void setItems(String name, List<String> itemIds) {
+        BoardContent existing = boards.get(name);
+        if (existing == null) return;
+        BoardContent updated = new BoardContent(
+                existing.name(), existing.displayName(), existing.sourceType(),
+                existing.lines(), existing.lastUpdatedMs(),
+                existing.tags(), List.copyOf(itemIds));
+        boards.put(name, updated);
+        listeners.forEach(l -> l.accept(new ChangeEvent.Put(updated)));
     }
 
     /**

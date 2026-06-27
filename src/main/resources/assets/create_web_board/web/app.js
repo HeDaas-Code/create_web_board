@@ -42,6 +42,23 @@
         historyCount: $("modal-history-count"),
         footMeta: $("modal-foot-meta"),
         deleteBtn: $("modal-delete"),
+        // Tag editor
+        tagInput: $("modal-tag-input"),
+        addTag: $("modal-add-tag"),
+        tagChips: $("modal-tag-chips"),
+        // Product thumbnails
+        pickItems: $("modal-pick-items"),
+        itemThumbs: $("modal-item-thumbs"),
+        // Group toggle
+        groupToggle: $("group-toggle"),
+        // Item picker modal
+        itemPicker: $("item-picker"),
+        itemPickerClose: $("item-picker-close"),
+        itemPickerSearch: $("item-picker-search"),
+        itemPickerGrid: $("item-picker-grid"),
+        itemPickerCount: $("item-picker-selected-count"),
+        itemPickerClear: $("item-picker-clear"),
+        itemPickerConfirm: $("item-picker-confirm"),
     };
 
     const state = {
@@ -51,6 +68,8 @@
         filter: "",           // current filter query (lower-case)
         lastSeenInterval: null,
         modalName: null,      // stable key of the board currently shown in the modal (null = closed)
+        grouped: true,        // cluster cards by tag on the main grid
+        itemPickerSelected: null, // Set<String> of item ids pending confirmation (null = picker closed)
     };
 
     // ---------- WebSocket ----------
@@ -190,7 +209,8 @@
     }
 
     function render() {
-        const all = Array.from(state.boards.values()).slice().sort((a, b) => a.name.localeCompare(b.name));
+        const all = Array.from(state.boards.values()).slice()
+                .sort((a, b) => displayTitle(a).localeCompare(displayTitle(b)));
         const visible = all.filter(matchesFilter);
 
         els.boardCount.textContent = String(all.length);
@@ -198,6 +218,7 @@
         // Empty state: show the big friendly placeholder whenever there's nothing to show.
         if (visible.length === 0) {
             els.boardGrid.innerHTML = "";
+            els.boardGrid.classList.remove("grouped");
             els.emptyState.hidden = false;
             return;
         }
@@ -206,10 +227,63 @@
         // Rebuild the grid. For typical dashboards (tens of boards) a full rebuild is cheap
         // and avoids the bookkeeping of diffing. If this ever scales to hundreds, switch to
         // keyed updates (re-use existing .card nodes by data-name).
-        const frag = document.createDocumentFragment();
-        visible.forEach((b) => frag.appendChild(renderCard(b)));
         els.boardGrid.innerHTML = "";
-        els.boardGrid.appendChild(frag);
+        if (state.grouped) {
+            els.boardGrid.classList.add("grouped");
+            els.boardGrid.appendChild(renderGrouped(visible));
+        } else {
+            els.boardGrid.classList.remove("grouped");
+            const frag = document.createDocumentFragment();
+            visible.forEach((b) => frag.appendChild(renderCard(b)));
+            els.boardGrid.appendChild(frag);
+        }
+    }
+
+    /**
+     * Cluster visible boards by tag. A board with multiple tags appears in every tag group
+     * it belongs to (multi-label clustering — a "冶炼/一楼" board shows under both "冶炼" and
+     * "一楼"). Boards with no tags fall into an "未分类" group at the end.
+     */
+    function renderGrouped(visible) {
+        const groups = new Map(); // tag -> [boards]
+        const untagged = [];
+        visible.forEach((b) => {
+            const tags = (b.tags && b.tags.length > 0) ? b.tags : null;
+            if (!tags) { untagged.push(b); return; }
+            tags.forEach((t) => {
+                if (!groups.has(t)) groups.set(t, []);
+                groups.get(t).push(b);
+            });
+        });
+        const frag = document.createDocumentFragment();
+        Array.from(groups.keys()).sort().forEach((tag) => {
+            frag.appendChild(renderGroup(tag, groups.get(tag), false));
+        });
+        if (untagged.length > 0) {
+            frag.appendChild(renderGroup("未分类", untagged, true));
+        }
+        return frag;
+    }
+
+    function renderGroup(title, boards, untagged) {
+        const section = document.createElement("section");
+        section.className = "group-section" + (untagged ? " untagged" : "");
+        const head = document.createElement("div");
+        head.className = "group-head";
+        const t = document.createElement("h3");
+        t.className = "group-title";
+        t.textContent = title;
+        const cnt = document.createElement("span");
+        cnt.className = "group-count";
+        cnt.textContent = boards.length + " 个看板";
+        t.appendChild(cnt);
+        head.appendChild(t);
+        section.appendChild(head);
+        const grid = document.createElement("div");
+        grid.className = "group-grid";
+        boards.forEach((b) => grid.appendChild(renderCard(b)));
+        section.appendChild(grid);
+        return section;
     }
 
     function renderCard(b) {
@@ -282,6 +356,30 @@
         lastSeen.dataset.boardName = b.name;
         meta.appendChild(lastSeen);
 
+        card.appendChild(head);
+        card.appendChild(meta);
+
+        // Tags (free-text labels; click a card opens the modal to edit them)
+        if (b.tags && b.tags.length > 0) {
+            const tags = document.createElement("div");
+            tags.className = "card-tags";
+            b.tags.forEach((tag) => {
+                const chip = document.createElement("span");
+                chip.className = "card-tag";
+                chip.textContent = tag;
+                tags.appendChild(chip);
+            });
+            card.appendChild(tags);
+        }
+
+        // Product thumbnails (resolved server-side from each mod jar's texture)
+        if (b.itemIds && b.itemIds.length > 0) {
+            const items = document.createElement("div");
+            items.className = "card-items";
+            b.itemIds.forEach((id) => items.appendChild(cardItemThumb(id)));
+            card.appendChild(items);
+        }
+
         // Lines
         const lines = document.createElement("ol");
         lines.className = "card-lines";
@@ -297,8 +395,6 @@
         const count = (b.lines || []).length;
         foot.textContent = count + (count === 1 ? " 行" : " 行");
 
-        card.appendChild(head);
-        card.appendChild(meta);
         card.appendChild(lines);
         card.appendChild(foot);
         return card;
@@ -347,6 +443,11 @@
         els.deleteBtn.title = b.stale
             ? "从看板移除（看板已离线，删除后不会自动恢复）"
             : "从看板移除（看板仍在线，DL 下次刷新会重建；如需永久移除请在游戏内关闭 Web 开关）";
+
+        // Tags + products (these re-render on every WS update; the name-input draft is preserved
+        // separately by refreshModalIfOpen, and the tag input below is not touched here).
+        renderTagChips(b);
+        renderItemThumbs(b);
     }
 
     async function loadHistory(name) {
@@ -654,6 +755,264 @@
         }
     }
 
+    // ---------- Card item thumbnail (small, for the grid card) ----------
+
+    /** Small 22px thumbnail for a product item on a card. Falls back to "?" on 404. */
+    function cardItemThumb(itemId) {
+        const wrap = document.createElement("span");
+        wrap.className = "card-item-thumb";
+        const img = document.createElement("img");
+        img.src = "/api/item-icon/" + encodeURIComponent(itemId);
+        img.alt = itemId;
+        img.title = itemId;
+        img.loading = "lazy";
+        img.addEventListener("error", () => {
+            wrap.classList.add("empty");
+            wrap.textContent = "?";
+            if (img.parentNode === wrap) wrap.removeChild(img);
+        });
+        wrap.appendChild(img);
+        return wrap;
+    }
+
+    // ---------- Tag editor (modal) ----------
+
+    function renderTagChips(b) {
+        els.tagChips.innerHTML = "";
+        (b.tags || []).forEach((tag) => {
+            const chip = document.createElement("span");
+            chip.className = "tag-chip";
+            const label = document.createElement("span");
+            label.textContent = tag;
+            const rm = document.createElement("button");
+            rm.className = "tag-chip-remove";
+            rm.textContent = "×";
+            rm.title = "移除标签";
+            rm.setAttribute("aria-label", "移除标签 " + tag);
+            rm.addEventListener("click", () => removeTag(tag));
+            chip.appendChild(label);
+            chip.appendChild(rm);
+            els.tagChips.appendChild(chip);
+        });
+    }
+
+    function addTag() {
+        const name = state.modalName;
+        if (!name) return;
+        const b = state.boards.get(name);
+        if (!b) return;
+        const val = els.tagInput.value.trim();
+        if (!val) return;
+        const tags = (b.tags || []).slice();
+        if (tags.includes(val)) { els.tagInput.value = ""; return; }
+        tags.push(val);
+        els.tagInput.value = "";
+        saveTags(tags);
+    }
+
+    function removeTag(tag) {
+        const name = state.modalName;
+        if (!name) return;
+        const b = state.boards.get(name);
+        if (!b) return;
+        saveTags((b.tags || []).filter((t) => t !== tag));
+    }
+
+    async function saveTags(tags) {
+        const name = state.modalName;
+        if (!name) return;
+        try {
+            const r = await fetch("/api/boards/" + encodeURIComponent(name) + "/tags", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ tags: tags }),
+            });
+            if (r.ok) {
+                const b = state.boards.get(name);
+                if (b) {
+                    b.tags = tags;
+                    render();
+                    renderModal(b);
+                }
+            }
+        } catch (_) { /* ignore */ }
+    }
+
+    // ---------- Product thumbnails (modal) ----------
+
+    function renderItemThumbs(b) {
+        els.itemThumbs.innerHTML = "";
+        (b.itemIds || []).forEach((id) => {
+            const thumb = document.createElement("span");
+            thumb.className = "item-thumb";
+            const img = document.createElement("img");
+            img.src = "/api/item-icon/" + encodeURIComponent(id);
+            img.alt = id;
+            img.title = id;
+            img.loading = "lazy";
+            img.addEventListener("error", () => {
+                const ph = document.createElement("span");
+                ph.className = "item-thumb-empty";
+                ph.textContent = "?";
+                if (img.parentNode === thumb) thumb.replaceChild(ph, img);
+            });
+            const nameEl = document.createElement("span");
+            nameEl.className = "item-thumb-name";
+            nameEl.textContent = shortItemId(id);
+            const rm = document.createElement("button");
+            rm.className = "item-thumb-remove";
+            rm.textContent = "×";
+            rm.title = "移除产物";
+            rm.setAttribute("aria-label", "移除产物 " + id);
+            rm.addEventListener("click", () => removeItem(id));
+            thumb.appendChild(img);
+            thumb.appendChild(nameEl);
+            thumb.appendChild(rm);
+            els.itemThumbs.appendChild(thumb);
+        });
+    }
+
+    function removeItem(itemId) {
+        const name = state.modalName;
+        if (!name) return;
+        const b = state.boards.get(name);
+        if (!b) return;
+        saveItems((b.itemIds || []).filter((x) => x !== itemId));
+    }
+
+    async function saveItems(itemIds) {
+        const name = state.modalName;
+        if (!name) return;
+        try {
+            const r = await fetch("/api/boards/" + encodeURIComponent(name) + "/items", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ itemIds: itemIds }),
+            });
+            if (r.ok) {
+                const b = state.boards.get(name);
+                if (b) {
+                    b.itemIds = itemIds;
+                    render();
+                    renderModal(b);
+                }
+            }
+        } catch (_) { /* ignore */ }
+    }
+
+    function shortItemId(id) {
+        const i = id.indexOf(":");
+        return i >= 0 ? id.slice(i + 1) : id;
+    }
+
+    // ---------- Item picker (modal-over-modal) ----------
+
+    let itemSearchTimer = null;
+
+    function openItemPicker() {
+        const name = state.modalName;
+        if (!name) return;
+        const b = state.boards.get(name);
+        state.itemPickerSelected = new Set(b ? (b.itemIds || []) : []);
+        els.itemPicker.hidden = false;
+        els.itemPickerSearch.value = "";
+        updatePickerCount();
+        searchItems("");
+        setTimeout(() => els.itemPickerSearch.focus(), 0);
+    }
+
+    function closeItemPicker() {
+        els.itemPicker.hidden = true;
+        state.itemPickerSelected = null;
+    }
+
+    function onItemSearchInput(val) {
+        clearTimeout(itemSearchTimer);
+        itemSearchTimer = setTimeout(() => searchItems(val), 200);
+    }
+
+    async function searchItems(q) {
+        els.itemPickerGrid.innerHTML = '<div class="item-picker-empty">加载中…</div>';
+        try {
+            const url = "/api/items/search?limit=200" + (q ? "&q=" + encodeURIComponent(q) : "");
+            const r = await fetch(url);
+            if (!r.ok) {
+                els.itemPickerGrid.innerHTML = '<div class="item-picker-empty">加载失败</div>';
+                return;
+            }
+            const list = await r.json();
+            renderItemPickerGrid(list);
+        } catch (_) {
+            els.itemPickerGrid.innerHTML = '<div class="item-picker-empty">加载失败</div>';
+        }
+    }
+
+    function renderItemPickerGrid(list) {
+        els.itemPickerGrid.innerHTML = "";
+        if (!list || list.length === 0) {
+            els.itemPickerGrid.innerHTML = '<div class="item-picker-empty">无匹配物品</div>';
+            return;
+        }
+        const frag = document.createDocumentFragment();
+        list.forEach((info) => {
+            const card = document.createElement("div");
+            const sel = state.itemPickerSelected && state.itemPickerSelected.has(info.id);
+            card.className = "item-card" + (sel ? " selected" : "");
+            card.dataset.id = info.id;
+            const img = document.createElement("img");
+            img.src = "/api/item-icon/" + encodeURIComponent(info.id);
+            img.alt = info.id;
+            img.loading = "lazy";
+            img.addEventListener("error", () => {
+                const ph = document.createElement("span");
+                ph.className = "item-card-icon";
+                ph.textContent = "?";
+                if (img.parentNode === card) card.replaceChild(ph, img);
+            });
+            const nameEl = document.createElement("span");
+            nameEl.className = "item-card-name";
+            nameEl.textContent = info.id;
+            nameEl.title = info.id;
+            card.appendChild(img);
+            card.appendChild(nameEl);
+            card.addEventListener("click", () => toggleItem(info.id));
+            frag.appendChild(card);
+        });
+        els.itemPickerGrid.appendChild(frag);
+    }
+
+    function toggleItem(id) {
+        if (!state.itemPickerSelected) return;
+        if (state.itemPickerSelected.has(id)) state.itemPickerSelected.delete(id);
+        else state.itemPickerSelected.add(id);
+        // Update just the toggled card's class — avoid a full grid re-render (keeps scroll position).
+        Array.from(els.itemPickerGrid.children).forEach((card) => {
+            if (card.dataset && card.dataset.id === id) {
+                card.classList.toggle("selected", state.itemPickerSelected.has(id));
+            }
+        });
+        updatePickerCount();
+    }
+
+    function updatePickerCount() {
+        const n = state.itemPickerSelected ? state.itemPickerSelected.size : 0;
+        els.itemPickerCount.textContent = "已选 " + n + " 个";
+    }
+
+    function clearItemPicker() {
+        if (state.itemPickerSelected) state.itemPickerSelected.clear();
+        els.itemPickerGrid.querySelectorAll(".item-card.selected").forEach((c) => c.classList.remove("selected"));
+        updatePickerCount();
+    }
+
+    async function confirmItems() {
+        const name = state.modalName;
+        if (!name || !state.itemPickerSelected) return;
+        const itemIds = Array.from(state.itemPickerSelected);
+        closeItemPicker();
+        await saveItems(itemIds);
+    }
+
     // ---------- Helpers ----------
 
     /** "create:nixie_tube" → "nixie_tube"; "create_web_board:foo" → "foo". */
@@ -729,14 +1088,41 @@
         // Only close when the overlay itself (not the dialog) is clicked.
         if (ev.target === els.modal) closeModal();
     });
+    // Esc 优先关产物选择弹窗（modal-over-modal），其次关看板详情。
     document.addEventListener("keydown", (ev) => {
-        if (ev.key === "Escape" && !els.modal.hidden) closeModal();
+        if (ev.key !== "Escape") return;
+        if (!els.itemPicker.hidden) closeItemPicker();
+        else if (!els.modal.hidden) closeModal();
     });
     els.saveName.addEventListener("click", saveDisplayName);
     els.deleteBtn.addEventListener("click", deleteBoard);
     els.nameInput.addEventListener("keydown", (ev) => {
         if (ev.key === "Enter") { ev.preventDefault(); saveDisplayName(); }
     });
+
+    // Group toggle: cluster cards by tag on the main grid.
+    els.groupToggle.addEventListener("click", () => {
+        state.grouped = !state.grouped;
+        els.groupToggle.setAttribute("aria-pressed", String(state.grouped));
+        render();
+    });
+
+    // Tag editor: Enter or 添加 button appends a tag.
+    els.addTag.addEventListener("click", addTag);
+    els.tagInput.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") { ev.preventDefault(); addTag(); }
+    });
+
+    // Item picker (modal-over-modal): open / close / search / clear / confirm.
+    els.pickItems.addEventListener("click", openItemPicker);
+    els.itemPickerClose.addEventListener("click", closeItemPicker);
+    els.itemPicker.addEventListener("click", (ev) => {
+        // Only close when the overlay itself (not the dialog) is clicked.
+        if (ev.target === els.itemPicker) closeItemPicker();
+    });
+    els.itemPickerSearch.addEventListener("input", (ev) => onItemSearchInput(ev.target.value));
+    els.itemPickerClear.addEventListener("click", clearItemPicker);
+    els.itemPickerConfirm.addEventListener("click", confirmItems);
 
     tickClock();
     setInterval(tickClock, 1000);

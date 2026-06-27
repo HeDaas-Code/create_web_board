@@ -20,6 +20,11 @@
             <input id="search" type="search" placeholder="搜索看板…" autocomplete="off" />
         </label>
 
+        <button class="topbar-btn" id="group-toggle" aria-pressed="true" title="按标签分组聚类显示">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+            <span>分组</span>
+        </button>
+
         <span class="spacer"></span>
 
         <span class="stat" title="当前看板数"><b id="board-count">0</b> 看板</span>
@@ -64,6 +69,26 @@
                     <p class="modal-subtitle" id="modal-key-hint"></p>
                 </section>
 
+                <!-- Tags: free-text labels the dashboard clusters boards by -->
+                <section class="modal-section">
+                    <label class="modal-label" for="modal-tag-input">标签</label>
+                    <div class="tag-row">
+                        <input id="modal-tag-input" type="text" maxlength="24" placeholder="输入标签后回车添加" autocomplete="off" />
+                        <button id="modal-add-tag" class="btn btn-ghost">添加</button>
+                    </div>
+                    <div class="tag-chips" id="modal-tag-chips" aria-live="polite"></div>
+                    <p class="modal-subtitle">用于在主界面按标签分组聚类显示；一个看板可有多个标签</p>
+                </section>
+
+                <!-- Products: associated item ids, shown as thumbnails on the card -->
+                <section class="modal-section">
+                    <div class="modal-section-head">
+                        <h3 class="modal-section-title">产物</h3>
+                        <button id="modal-pick-items" class="btn btn-ghost">选择产物</button>
+                    </div>
+                    <div class="item-thumbs" id="modal-item-thumbs" aria-live="polite"></div>
+                </section>
+
                 <!-- Current content snapshot -->
                 <section class="modal-section">
                     <h3 class="modal-section-title">当前内容</h3>
@@ -84,6 +109,31 @@
                 <span class="modal-foot-meta" id="modal-foot-meta"></span>
                 <span class="spacer"></span>
                 <button id="modal-delete" class="btn btn-danger">删除看板</button>
+            </footer>
+        </div>
+    </div>
+
+    <!-- Item picker: modal-over-modal for selecting product items with thumbnails -->
+    <div class="modal-overlay item-picker-overlay" id="item-picker" hidden>
+        <div class="modal item-picker-modal" role="dialog" aria-modal="true" aria-labelledby="item-picker-title">
+            <header class="modal-head">
+                <h2 class="modal-title" id="item-picker-title">选择产物</h2>
+                <button class="modal-close" id="item-picker-close" aria-label="关闭" title="关闭">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                </button>
+            </header>
+            <div class="item-picker-body">
+                <label class="search-box item-picker-search">
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+                    <input id="item-picker-search" type="search" placeholder="搜索物品 id（如 iron_ingot、create:cogwheel）…" autocomplete="off" />
+                </label>
+                <div class="item-picker-grid" id="item-picker-grid" aria-live="polite"></div>
+            </div>
+            <footer class="modal-foot">
+                <span class="modal-foot-meta" id="item-picker-selected-count">已选 0 个</span>
+                <span class="spacer"></span>
+                <button id="item-picker-clear" class="btn btn-ghost">清空选择</button>
+                <button id="item-picker-confirm" class="btn btn-primary">确认</button>
             </footer>
         </div>
     </div>

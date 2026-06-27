@@ -4,9 +4,12 @@ import com.example.webboard.content.persistence.BoardDatabase;
 import com.example.webboard.content.registry.BoardContent;
 import com.example.webboard.content.registry.BoardRegistry;
 
+import com.example.webboard.content.items.ItemIconService;
 import com.example.webboard.content.mirror.SourceLabels;
 
 import io.javalin.Javalin;
+
+import java.util.List;
 
 /**
  * ApiRoutes — HTTP endpoints for the browser dashboard.
@@ -131,10 +134,107 @@ public final class ApiRoutes {
             ctx.result(SourceLabels.allLabelsAsJson());
         });
 
+        // GET /api/item-icon/{itemId} -- serve an item's texture PNG for dashboard thumbnails.
+        // itemId is the full registry id (e.g. "minecraft:iron_ingot"), URL-encoded by the
+        // client. The ItemIconService reads the PNG straight from the classpath (every mod jar),
+        // so Create + all addon textures are reachable without a client resource manager. 404
+        // when no texture resolves; the client then shows a fallback glyph.
+        app.get("/api/item-icon/{itemId}", ctx -> {
+            String itemId = ctx.pathParam("itemId");
+            byte[] png = ItemIconService.get().getIcon(itemId);
+            if (png == null) {
+                ctx.status(404);
+                return;
+            }
+            ctx.contentType("image/png");
+            // Cache-control: item textures are immutable for a game session, so let the browser
+            // cache aggressively to avoid re-fetching on every card render.
+            ctx.header("Cache-Control", "public, max-age=3600");
+            ctx.result(png);
+        });
+
+        // GET /api/items/search?q=...&limit=... -- searchable item catalog for the product
+        // picker. Returns [{"id":"minecraft:iron_ingot","name":"iron_ingot"}, ...]. The catalog
+        // is built once by iterating BuiltInRegistries.ITEM, so it covers vanilla + every mod.
+        app.get("/api/items/search", ctx -> {
+            String q = ctx.queryParam("q");
+            int limit = 50;
+            String limitStr = ctx.queryParam("limit");
+            if (limitStr != null) {
+                try { limit = Math.max(1, Math.min(200, Integer.parseInt(limitStr))); }
+                catch (NumberFormatException ignored) { /* keep default */ }
+            }
+            var results = ItemIconService.get().search(q, limit);
+            StringBuilder sb = new StringBuilder("[");
+            boolean first = true;
+            for (var info : results) {
+                if (!first) sb.append(',');
+                first = false;
+                sb.append("{\"id\":").append(JsonUtil.quote(info.id()))
+                        .append(",\"name\":").append(JsonUtil.quote(info.name())).append('}');
+            }
+            sb.append(']');
+            ctx.contentType("application/json");
+            ctx.result(sb.toString());
+        });
+
+        // PUT /api/boards/{name}/tags -- replace a board's tag set. Body: {"tags":["a","b"]}.
+        // Tags are free-text labels the dashboard clusters boards by. Empty array clears them.
+        // setTags fires a Put event so the WS hub rebroadcasts; we also persist for restarts.
+        app.put("/api/boards/{name}/tags", ctx -> {
+            String name = ctx.pathParam("name");
+            BoardContent b = registry.get(name);
+            if (b == null) {
+                ctx.status(404);
+                ctx.result("{\"error\":\"board not found: " + JsonUtil.quote(name) + "\"}");
+                return;
+            }
+            List<String> tags = JsonUtil.extractStringArrayField(ctx.body(), "tags");
+            registry.setTags(name, tags);
+            if (BoardDatabase.get().isInitialized()) {
+                BoardDatabase.get().setTags(name, tags);
+            }
+            ctx.contentType("application/json");
+            ctx.result("{\"name\":" + JsonUtil.quote(name) + ",\"tags\":" + jsonStrArray(tags) + "}");
+        });
+
+        // PUT /api/boards/{name}/items -- replace a board's product item ids.
+        // Body: {"itemIds":["minecraft:iron_ingot"]}. Empty array clears. Multi-select: a board
+        // can represent a line producing several items. setItems fires a Put for WS rebroadcast.
+        app.put("/api/boards/{name}/items", ctx -> {
+            String name = ctx.pathParam("name");
+            BoardContent b = registry.get(name);
+            if (b == null) {
+                ctx.status(404);
+                ctx.result("{\"error\":\"board not found: " + JsonUtil.quote(name) + "\"}");
+                return;
+            }
+            List<String> itemIds = JsonUtil.extractStringArrayField(ctx.body(), "itemIds");
+            registry.setItems(name, itemIds);
+            if (BoardDatabase.get().isInitialized()) {
+                BoardDatabase.get().setItems(name, itemIds);
+            }
+            ctx.contentType("application/json");
+            ctx.result("{\"name\":" + JsonUtil.quote(name) + ",\"itemIds\":" + jsonStrArray(itemIds) + "}");
+        });
+
         app.get("/api/health", ctx -> {
             ctx.contentType("application/json");
             ctx.result("{\"status\":\"ok\",\"boards\":" + registry.size()
                     + ",\"wsConnections\":" + hub.connectionCount() + "}");
         });
+    }
+
+    /** Serialize a List<String> as a JSON array of quoted strings. */
+    private static String jsonStrArray(List<String> list) {
+        StringBuilder sb = new StringBuilder("[");
+        boolean first = true;
+        for (String s : list) {
+            if (!first) sb.append(',');
+            first = false;
+            sb.append(JsonUtil.quote(s));
+        }
+        sb.append(']');
+        return sb.toString();
     }
 }

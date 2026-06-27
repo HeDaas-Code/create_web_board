@@ -100,6 +100,10 @@ public final class WebMirror {
         // dashboard modal; without this the next refresh would drop it back to the position key).
         BoardContent existing = BoardRegistry.get().get(name);
         String displayName = existing != null ? existing.displayName() : null;
+        // Likewise preserve user-set tags + product item ids — a content refresh must never wipe
+        // the dashboard-side organization the user configured.
+        List<String> tags = existing != null ? existing.tags() : List.of();
+        List<String> itemIds = existing != null ? existing.itemIds() : List.of();
 
         long now = System.currentTimeMillis();
         Cached prev = LAST_SENT.get(name);
@@ -118,7 +122,7 @@ public final class WebMirror {
         }
         LAST_SENT.put(name, new Cached(sourceType, lines, now));
 
-        BoardContent content = new BoardContent(name, displayName, sourceType, lines, now);
+        BoardContent content = new BoardContent(name, displayName, sourceType, lines, now, tags, itemIds);
         BoardRegistry.get().put(content);
         if (BoardDatabase.get().isInitialized()) {
             BoardDatabase.get().upsert(content);

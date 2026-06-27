@@ -86,6 +86,66 @@ public final class JsonUtil {
         return null; // unterminated string
     }
 
+    /**
+     * Extract a JSON string array field's values from a small JSON object (e.g. a request body
+     * like {@code {"tags":["a","b"]}} or {@code {"itemIds":["minecraft:iron_ingot"]}}).
+     * Returns an empty list if the field is absent or not an array. Controlled-input parser
+     * for the dashboard modal's tag/item API payloads — not a general JSON parser.
+     */
+    public static java.util.List<String> extractStringArrayField(String json, String field) {
+        java.util.List<String> result = new java.util.ArrayList<>();
+        if (json == null) return result;
+        String needle = "\"" + field + "\"";
+        int i = json.indexOf(needle);
+        if (i < 0) return result;
+        i += needle.length();
+        while (i < json.length()) {
+            char c = json.charAt(i);
+            if (c == ':') { i++; break; }
+            if (Character.isWhitespace(c)) { i++; continue; }
+            return result; // unexpected char before colon
+        }
+        while (i < json.length() && Character.isWhitespace(json.charAt(i))) i++;
+        if (i >= json.length() || json.charAt(i) != '[') return result;
+        i++; // opening bracket
+        while (i < json.length()) {
+            while (i < json.length() && Character.isWhitespace(json.charAt(i))) i++;
+            if (i >= json.length()) break;
+            if (json.charAt(i) == ']') return result;
+            if (json.charAt(i) != '"') return result; // malformed
+            i++; // opening quote
+            StringBuilder sb = new StringBuilder();
+            while (i < json.length()) {
+                char c = json.charAt(i++);
+                if (c == '"') { result.add(sb.toString()); break; }
+                if (c == '\\' && i < json.length()) {
+                    char esc = json.charAt(i++);
+                    switch (esc) {
+                        case '"'  -> sb.append('"');
+                        case '\\' -> sb.append('\\');
+                        case '/'  -> sb.append('/');
+                        case 'n'  -> sb.append('\n');
+                        case 'r'  -> sb.append('\r');
+                        case 't'  -> sb.append('\t');
+                        case 'u' -> {
+                            if (i + 4 <= json.length()) {
+                                sb.append((char) Integer.parseInt(json.substring(i, i + 4), 16));
+                                i += 4;
+                            }
+                        }
+                        default -> sb.append(esc);
+                    }
+                } else {
+                    sb.append(c);
+                }
+            }
+            while (i < json.length() && Character.isWhitespace(json.charAt(i))) i++;
+            if (i < json.length() && json.charAt(i) == ',') { i++; continue; }
+            if (i < json.length() && json.charAt(i) == ']') return result;
+        }
+        return result;
+    }
+
     /** Serialize a {@code BoardContent} to its JSON object form (no enclosing braces wrapping). */
     public static String boardToJson(com.example.webboard.content.registry.BoardContent b) {
         StringBuilder sb = new StringBuilder("{\"name\":").append(quote(b.name()))
@@ -102,7 +162,21 @@ public final class JsonUtil {
         }
         sb.append("],\"lastUpdatedMs\":").append(b.lastUpdatedMs())
                 .append(",\"stale\":").append(b.stale())
-                .append('}');
+                .append(",\"tags\":[");
+        boolean firstTag = true;
+        for (String tag : b.tags()) {
+            if (!firstTag) sb.append(',');
+            sb.append(quote(tag));
+            firstTag = false;
+        }
+        sb.append("],\"itemIds\":[");
+        boolean firstItem = true;
+        for (String item : b.itemIds()) {
+            if (!firstItem) sb.append(',');
+            sb.append(quote(item));
+            firstItem = false;
+        }
+        sb.append("]}");
         return sb.toString();
     }
 }

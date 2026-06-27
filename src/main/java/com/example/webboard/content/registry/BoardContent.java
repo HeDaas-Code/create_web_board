@@ -31,13 +31,16 @@ public record BoardContent(
         String displayName,
         String sourceType,
         List<String> lines,
-        long lastUpdatedMs
+        long lastUpdatedMs,
+        List<String> tags,
+        List<String> itemIds
 ) {
     /** Heartbeat timeout: a board with no update for this long is considered stale. */
     public static long STALE_THRESHOLD_MS = 30_000;
 
     public static BoardContent of(String name, String sourceType, List<String> lines) {
-        return new BoardContent(name, null, sourceType, List.copyOf(lines), Instant.now().toEpochMilli());
+        return new BoardContent(name, null, sourceType, List.copyOf(lines),
+                Instant.now().toEpochMilli(), List.of(), List.of());
     }
 
     /**

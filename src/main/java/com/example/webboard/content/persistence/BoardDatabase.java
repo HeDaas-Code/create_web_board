@@ -90,7 +90,9 @@ public final class BoardDatabase {
             List<String> lines,
             long lastUpdatedMs,
             String status,
-            List<HistoryEntry> history) {}
+            List<HistoryEntry> history,
+            List<String> tags,
+            List<String> itemIds) {}
 
     /** Cap on history entries per board to keep the JSON file bounded. Oldest dropped first. */
     private static final int HISTORY_CAP = 200;
@@ -143,6 +145,14 @@ public final class BoardDatabase {
         // refresh path from WebMirror passes the preserved name through, but be defensive).
         String displayName = content.displayName() != null ? content.displayName()
                 : (prev != null ? prev.displayName() : null);
+        // Preserve user-set tags + product item ids. WebMirror carries them through, but API
+        // rename/name paths only set displayName — be defensive so a refresh never wipes them.
+        List<String> tags = (content.tags() != null && !content.tags().isEmpty())
+                ? new ArrayList<>(content.tags())
+                : (prev != null ? new ArrayList<>(prev.tags()) : new ArrayList<>());
+        List<String> itemIds = (content.itemIds() != null && !content.itemIds().isEmpty())
+                ? new ArrayList<>(content.itemIds())
+                : (prev != null ? new ArrayList<>(prev.itemIds()) : new ArrayList<>());
 
         List<HistoryEntry> history = prev != null ? new ArrayList<>(prev.history()) : new ArrayList<>();
         List<String> newLines = new ArrayList<>(content.lines());
@@ -158,7 +168,9 @@ public final class BoardDatabase {
                 newLines,
                 content.lastUpdatedMs(),
                 "active",
-                history));
+                history,
+                tags,
+                itemIds));
         dirty = true;
     }
 
@@ -176,7 +188,49 @@ public final class BoardDatabase {
                 existing.lines(),
                 existing.lastUpdatedMs(),
                 existing.status(),
-                existing.history()));
+                existing.history(),
+                existing.tags(),
+                existing.itemIds()));
+        dirty = true;
+    }
+
+    /**
+     * Replace a board's tag set (free-text labels, persisted across restarts). No-op if the
+     * board isn't persisted. Pass an empty list to clear all tags.
+     */
+    public void setTags(String name, List<String> tags) {
+        if (!initialized) return;
+        BoardEntry existing = entries.get(name);
+        if (existing == null) return;
+        entries.put(name, new BoardEntry(
+                existing.sourceType(),
+                existing.displayName(),
+                existing.lines(),
+                existing.lastUpdatedMs(),
+                existing.status(),
+                existing.history(),
+                new ArrayList<>(tags),
+                existing.itemIds()));
+        dirty = true;
+    }
+
+    /**
+     * Replace a board's associated product item ids (e.g. {@code minecraft:iron_ingot}).
+     * No-op if the board isn't persisted. Pass an empty list to clear.
+     */
+    public void setItems(String name, List<String> itemIds) {
+        if (!initialized) return;
+        BoardEntry existing = entries.get(name);
+        if (existing == null) return;
+        entries.put(name, new BoardEntry(
+                existing.sourceType(),
+                existing.displayName(),
+                existing.lines(),
+                existing.lastUpdatedMs(),
+                existing.status(),
+                existing.history(),
+                existing.tags(),
+                new ArrayList<>(itemIds)));
         dirty = true;
     }
 
@@ -205,7 +259,9 @@ public final class BoardDatabase {
                     existing.lines(),
                     existing.lastUpdatedMs(),
                     "removed",
-                    existing.history()));
+                    existing.history(),
+                    existing.tags(),
+                    existing.itemIds()));
             dirty = true;
         }
     }
@@ -223,7 +279,8 @@ public final class BoardDatabase {
             BoardEntry be = e.getValue();
             if ("active".equals(be.status())) {
                 result.add(new BoardContent(e.getKey(), be.displayName(), be.sourceType(),
-                        new ArrayList<>(be.lines()), be.lastUpdatedMs()));
+                        new ArrayList<>(be.lines()), be.lastUpdatedMs(),
+                        new ArrayList<>(be.tags()), new ArrayList<>(be.itemIds())));
             }
         }
         return result;
@@ -316,7 +373,31 @@ public final class BoardDatabase {
                 }
                 sb.append("]}");
             }
-            sb.append("]}");
+            sb.append("],");
+            // tags (omitted when empty to keep the file lean; parser treats missing as empty)
+            if (!be.tags().isEmpty()) {
+                sb.append("\"tags\":[");
+                boolean firstTag = true;
+                for (String tag : be.tags()) {
+                    if (!firstTag) sb.append(',');
+                    firstTag = false;
+                    sb.append(JsonEscape.quote(tag));
+                }
+                sb.append("],");
+            }
+            // itemIds (product item ids for dashboard thumbnails)
+            if (!be.itemIds().isEmpty()) {
+                sb.append("\"itemIds\":[");
+                boolean firstItem = true;
+                for (String item : be.itemIds()) {
+                    if (!firstItem) sb.append(',');
+                    firstItem = false;
+                    sb.append(JsonEscape.quote(item));
+                }
+                sb.append("],");
+            }
+            sb.setLength(sb.length() - 1); // trim trailing comma after last field
+            sb.append("}");
         }
         sb.append("}}");
         return sb.toString();
@@ -413,6 +494,8 @@ public final class BoardDatabase {
                 long lastUpdatedMs = 0;
                 String status = "active";
                 List<HistoryEntry> history = new ArrayList<>();
+                List<String> tags = new ArrayList<>();
+                List<String> itemIds = new ArrayList<>();
                 if (p.peek() != '}') {
                     while (true) {
                         String field = p.parseString();
@@ -479,6 +562,32 @@ public final class BoardDatabase {
                                 }
                                 p.expect(']');
                             }
+                            case "tags" -> {
+                                p.expect('[');
+                                p.skipWs();
+                                if (p.peek() != ']') {
+                                    while (true) {
+                                        tags.add(p.parseString());
+                                        p.skipWs();
+                                        if (p.peek() == ',') { p.i++; p.skipWs(); continue; }
+                                        break;
+                                    }
+                                }
+                                p.expect(']');
+                            }
+                            case "itemIds" -> {
+                                p.expect('[');
+                                p.skipWs();
+                                if (p.peek() != ']') {
+                                    while (true) {
+                                        itemIds.add(p.parseString());
+                                        p.skipWs();
+                                        if (p.peek() == ',') { p.i++; p.skipWs(); continue; }
+                                        break;
+                                    }
+                                }
+                                p.expect(']');
+                            }
                             default -> p.skipValue();
                         }
                         p.skipWs();
@@ -487,7 +596,7 @@ public final class BoardDatabase {
                     }
                 }
                 p.expect('}');
-                result.put(name, new BoardEntry(sourceType, displayName, lines, lastUpdatedMs, status, history));
+                result.put(name, new BoardEntry(sourceType, displayName, lines, lastUpdatedMs, status, history, tags, itemIds));
                 p.skipWs();
                 if (p.peek() == ',') { p.i++; p.skipWs(); continue; }
                 break;
