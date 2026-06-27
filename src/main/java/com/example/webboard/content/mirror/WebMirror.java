@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
+import com.example.webboard.content.persistence.BoardDatabase;
 import com.example.webboard.content.registry.BoardContent;
 import com.example.webboard.content.registry.BoardRegistry;
 import com.simibubi.create.api.behaviour.display.DisplaySource;
@@ -69,6 +70,9 @@ public final class WebMirror {
             // remove() is a no-op if the board isn't tracked; clear the dedup cache too.
             LAST_SENT.remove(name);
             BoardRegistry.get().remove(name);
+            if (BoardDatabase.get().isInitialized()) {
+                BoardDatabase.get().markRemoved(name);
+            }
             return;
         }
 
@@ -89,7 +93,11 @@ public final class WebMirror {
         }
         LAST_SENT.put(name, new Cached(sourceType, lines));
 
-        BoardRegistry.get().put(BoardContent.of(name, sourceType, lines));
+        BoardContent content = BoardContent.of(name, sourceType, lines);
+        BoardRegistry.get().put(content);
+        if (BoardDatabase.get().isInitialized()) {
+            BoardDatabase.get().upsert(content);
+        }
     }
 
     private static String boardName(BlockEntity be) {

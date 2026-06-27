@@ -4,6 +4,7 @@ import com.example.webboard.CreateWebBoard;
 import com.example.webboard.content.httpserver.ConfigLoader;
 import com.example.webboard.content.httpserver.HttpServer;
 import com.example.webboard.content.httpserver.ServerConfig;
+import com.example.webboard.content.persistence.BoardDatabase;
 
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
@@ -46,8 +47,11 @@ public final class ServerLifecycle {
                 cfg = cfg.withPort(Integer.parseInt(portOverride));
             } catch (NumberFormatException ignored) { /* keep loaded port */ }
         }
-        // Fresh server start → clear any boards left over from a previous run.
+        // Fresh server start -> clear any boards left over from a previous run.
         com.example.webboard.content.registry.BoardRegistry.get().clearAll();
+        // Initialize SQLite persistence and load boards from the previous session.
+        BoardDatabase.get().init();
+        com.example.webboard.content.registry.BoardRegistry.get().putAll(BoardDatabase.get().loadAll());
         httpServer = new HttpServer(cfg, com.example.webboard.content.registry.BoardRegistry.get());
         try {
             httpServer.start();
@@ -60,6 +64,8 @@ public final class ServerLifecycle {
     @SubscribeEvent
     public static void onServerStopping(ServerStoppingEvent event) {
         if (httpServer != null) {
+            // Close the database connection before shutting down the HTTP server.
+            BoardDatabase.get().close();
             httpServer.stop();
             httpServer = null;
         }

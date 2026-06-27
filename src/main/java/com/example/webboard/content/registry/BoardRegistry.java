@@ -44,6 +44,13 @@ public final class BoardRegistry {
         listeners.forEach(l -> l.accept(new ChangeEvent.Put(content)));
     }
 
+    /** Bulk insert/replace. Fires a {@link ChangeEvent.Put} for each entry. */
+    public void putAll(Collection<BoardContent> contents) {
+        for (BoardContent content : contents) {
+            put(content);
+        }
+    }
+
     /** Remove a board by name. Fires a {@link ChangeEvent.Remove} if the board existed. */
     public void remove(String name) {
         BoardContent removed = boards.remove(name);

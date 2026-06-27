@@ -37,6 +37,7 @@
         ws: null,
         backoff: 500,         // ms, doubles on failure, cap 10s
         filter: "",           // current filter query (lower-case)
+        lastSeenInterval: null,
     };
 
     // ---------- WebSocket ----------
@@ -79,10 +80,14 @@
         switch (msg.type) {
             case "snapshot":
                 state.boards.clear();
-                (msg.boards || []).forEach((b) => state.boards.set(b.name, b));
+                (msg.boards || []).forEach((b) => {
+                    b._seenAt = Date.now();
+                    state.boards.set(b.name, b);
+                });
                 render();
                 break;
             case "update":
+                msg.board._seenAt = Date.now();
                 state.boards.set(msg.board.name, msg.board);
                 render();
                 break;
@@ -103,7 +108,10 @@
             if (!r.ok) return;
             const list = await r.json();
             const next = new Map();
-            list.forEach((b) => next.set(b.name, b));
+            list.forEach((b) => {
+                b._seenAt = Date.now();
+                next.set(b.name, b);
+            });
             // Only re-render if something actually changed (cheap shallow compare).
             if (!sameKeys(state.boards, next)) {
                 state.boards = next;
@@ -166,6 +174,9 @@
         card.className = "card";
         card.dataset.name = b.name;
 
+        const stale = !b._seenAt || Date.now() - b._seenAt > 30000;
+        if (stale) card.classList.add("card-offline");
+
         // Header: title + live badge
         const head = document.createElement("header");
         head.className = "card-head";
@@ -177,7 +188,11 @@
 
         const live = document.createElement("span");
         live.className = "card-live";
-        live.innerHTML = '<span class="live-dot"></span>live';
+        if (stale) {
+            live.innerHTML = '<span class="live-dot"></span>离线';
+        } else {
+            live.innerHTML = '<span class="live-dot"></span>live';
+        }
 
         head.appendChild(title);
         head.appendChild(live);
@@ -189,7 +204,7 @@
         if (b.sourceType) {
             const chip = document.createElement("span");
             chip.className = "chip";
-            chip.textContent = shortSource(b.sourceType);
+            chip.textContent = b.sourceLabel || shortSource(b.sourceType);
             chip.title = b.sourceType;
             meta.appendChild(chip);
         }
@@ -199,6 +214,16 @@
         time.textContent = formatTime(b.lastUpdatedMs);
         time.title = "最后更新";
         meta.appendChild(time);
+
+        // Last-seen (relative time)
+        const lastSeen = document.createElement("span");
+        lastSeen.className = "last-seen";
+        if (b._seenAt) {
+            const elapsed = Date.now() - b._seenAt;
+            lastSeen.textContent = "上次更新: " + formatRelative(elapsed);
+        }
+        lastSeen.dataset.boardName = b.name;
+        meta.appendChild(lastSeen);
 
         // Lines
         const lines = document.createElement("ol");
@@ -213,7 +238,23 @@
         const foot = document.createElement("footer");
         foot.className = "card-foot";
         const count = (b.lines || []).length;
-        foot.textContent = count + (count === 1 ? " 行" : " 行") + " · 实时更新";
+        foot.textContent = count + (count === 1 ? " 行" : " 行");
+
+        if (stale) {
+            const removeBtn = document.createElement("button");
+            removeBtn.className = "remove-btn";
+            removeBtn.textContent = "移除";
+            removeBtn.addEventListener("click", async () => {
+                try {
+                    const r = await fetch("/api/boards/" + encodeURIComponent(b.name), { method: "DELETE" });
+                    if (r.ok) {
+                        state.boards.delete(b.name);
+                        render();
+                    }
+                } catch (_) { /* ignore */ }
+            });
+            foot.appendChild(removeBtn);
+        }
 
         card.appendChild(head);
         card.appendChild(meta);
@@ -238,6 +279,13 @@
         return pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds());
     }
 
+    /** Format milliseconds as a human-friendly relative time string. */
+    function formatRelative(ms) {
+        if (ms < 60000) return Math.floor(ms / 1000) + "s 前";
+        if (ms < 3600000) return Math.floor(ms / 60000) + "m 前";
+        return Math.floor(ms / 3600000) + "h 前";
+    }
+
     function sameKeys(a, b) {
         if (a.size !== b.size) return false;
         for (const k of a.keys()) if (!b.has(k)) return false;
@@ -248,6 +296,32 @@
         const d = new Date();
         const pad = (n) => String(n).padStart(2, "0");
         els.clock.textContent = pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds());
+    }
+
+    // ---------- Last-seen ticker ----------
+
+    function startLastSeenTicker() {
+        state.lastSeenInterval = setInterval(() => {
+            let needRender = false;
+            // Update last-seen text on all visible cards
+            document.querySelectorAll(".last-seen").forEach((el) => {
+                const name = el.dataset.boardName;
+                const b = state.boards.get(name);
+                if (!b || !b._seenAt) return;
+                const elapsed = Date.now() - b._seenAt;
+                el.textContent = "上次更新: " + formatRelative(elapsed);
+            });
+            // Check if any non-stale cards have crossed the 30s threshold
+            document.querySelectorAll(".card:not(.card-offline)").forEach((cardEl) => {
+                const name = cardEl.dataset.name;
+                const b = state.boards.get(name);
+                if (!b || !b._seenAt) return;
+                if (Date.now() - b._seenAt > 30000) {
+                    needRender = true;
+                }
+            });
+            if (needRender) render();
+        }, 1000);
     }
 
     // ---------- Boot ----------
@@ -264,6 +338,8 @@
     setInterval(fetchHealth, 5000);
 
     setInterval(fetchAll, 5000);
+
+    startLastSeenTicker();
 
     connect();
     fetchAll();

@@ -1,5 +1,6 @@
 package com.example.webboard.content.httpserver;
 
+import com.example.webboard.content.persistence.BoardDatabase;
 import com.example.webboard.content.registry.BoardRegistry;
 import com.example.webboard.content.registry.BoardRegistry.ChangeEvent;
 
@@ -77,15 +78,33 @@ public class WebSocketHub {
     }
 
     /**
-     * Listener entry point — runs on the game thread. It must stay cheap: it only submits the
+     * Listener entry point -- runs on the game thread. It must stay cheap: it only submits the
      * real work (JSON build + per-session send) to the worker thread. Returning quickly here is
      * what keeps the game thread responsive.
+     *
+     * <p>Also persists the change to SQLite so that boards updated from any source (e.g. WS
+     * clients) survive a server restart. The DB write is guarded by {@code isInitialized()} so
+     * it is a no-op before the database is ready.
      */
     private void onChange(ChangeEvent ev) {
+        // Persist to SQLite (write-through). This ensures DB writes happen even when the
+        // event comes from a different source (e.g. a WebSocket client action).
+        switch (ev) {
+            case ChangeEvent.Put put -> {
+                if (BoardDatabase.get().isInitialized()) {
+                    BoardDatabase.get().upsert(put.content());
+                }
+            }
+            case ChangeEvent.Remove rm -> {
+                if (BoardDatabase.get().isInitialized()) {
+                    BoardDatabase.get().markRemoved(rm.name());
+                }
+            }
+        }
         try {
             sendExecutor.submit(() -> broadcast(ev));
         } catch (Exception e) {
-            // RejectedExecutionException if shutdown() already ran — harmless at server stop.
+            // RejectedExecutionException if shutdown() already ran -- harmless at server stop.
             LOGGER.debug("[web_board] ws send task rejected: {}", e.toString());
         }
     }

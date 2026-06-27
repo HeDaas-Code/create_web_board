@@ -1,7 +1,10 @@
 package com.example.webboard.content.httpserver;
 
+import com.example.webboard.content.persistence.BoardDatabase;
 import com.example.webboard.content.registry.BoardContent;
 import com.example.webboard.content.registry.BoardRegistry;
+
+import com.example.webboard.content.mirror.SourceLabels;
 
 import io.javalin.Javalin;
 
@@ -35,6 +38,29 @@ public final class ApiRoutes {
             ctx.result(sb.toString());
         });
 
+        // DELETE /api/boards/{name} -- manual removal from the dashboard.
+        // The board must be stale (no heartbeat for 30s); otherwise returns 409 Conflict.
+        app.delete("/api/boards/{name}", ctx -> {
+            String name = ctx.pathParam("name");
+            BoardContent b = registry.get(name);
+            if (b == null) {
+                ctx.status(404);
+                ctx.result("{\"error\":\"board not found: " + JsonUtil.quote(name) + "\"}");
+                return;
+            }
+            if (!b.stale()) {
+                ctx.status(409);
+                ctx.result("{\"error\":\"board is not stale; cannot remove active board: " + JsonUtil.quote(name) + "\"}");
+                return;
+            }
+            registry.remove(name);
+            if (BoardDatabase.get().isInitialized()) {
+                BoardDatabase.get().markRemoved(name);
+            }
+            ctx.contentType("application/json");
+            ctx.result("{\"removed\":" + JsonUtil.quote(name) + "}");
+        });
+
         app.get("/api/boards/{name}", ctx -> {
             String name = ctx.pathParam("name");
             BoardContent b = registry.get(name);
@@ -45,6 +71,11 @@ public final class ApiRoutes {
             }
             ctx.contentType("application/json");
             ctx.result(JsonUtil.boardToJson(b));
+        });
+
+        app.get("/api/source-labels", ctx -> {
+            ctx.contentType("application/json");
+            ctx.result(SourceLabels.allLabelsAsJson());
         });
 
         app.get("/api/health", ctx -> {

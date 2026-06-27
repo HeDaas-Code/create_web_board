@@ -25,7 +25,18 @@ public record BoardContent(
         List<String> lines,
         long lastUpdatedMs
 ) {
+    /** Heartbeat timeout: a board with no update for this long is considered stale. */
+    public static long STALE_THRESHOLD_MS = 30_000;
+
     public static BoardContent of(String name, String sourceType, List<String> lines) {
         return new BoardContent(name, sourceType, List.copyOf(lines), Instant.now().toEpochMilli());
+    }
+
+    /**
+     * Returns true if this board hasn't been updated for longer than {@link #STALE_THRESHOLD_MS}.
+     * A board with {@code lastUpdatedMs == 0} is never considered stale (just created, no heartbeat yet).
+     */
+    public boolean stale() {
+        return lastUpdatedMs > 0 && System.currentTimeMillis() - lastUpdatedMs > STALE_THRESHOLD_MS;
     }
 }

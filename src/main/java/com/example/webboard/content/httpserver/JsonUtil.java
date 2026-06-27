@@ -41,6 +41,7 @@ public final class JsonUtil {
     public static String boardToJson(com.example.webboard.content.registry.BoardContent b) {
         StringBuilder sb = new StringBuilder("{\"name\":").append(quote(b.name()))
                 .append(",\"sourceType\":").append(quote(b.sourceType()))
+                .append(",\"sourceLabel\":").append(quote(com.example.webboard.content.mirror.SourceLabels.label(b.sourceType())))
                 .append(",\"lines\":[");
         boolean first = true;
         for (String line : b.lines()) {
@@ -48,7 +49,9 @@ public final class JsonUtil {
             sb.append(quote(line));
             first = false;
         }
-        sb.append("],\"lastUpdatedMs\":").append(b.lastUpdatedMs()).append('}');
+        sb.append("],\"lastUpdatedMs\":").append(b.lastUpdatedMs())
+                .append(",\"stale\":").append(b.stale())
+                .append('}');
         return sb.toString();
     }
 }
