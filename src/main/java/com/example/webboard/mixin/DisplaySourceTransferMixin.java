@@ -25,7 +25,7 @@ public abstract class DisplaySourceTransferMixin {
     @WrapOperation(
             method = "transferData",
             remap = false,
-            target = @At(
+            at = @At(
                     value = "INVOKE",
                     target = "Lcom/simibubi/create/api/behaviour/display/DisplaySource;provideText(Lcom/simibubi/create/content/redstone/displayLink/DisplayLinkContext;Lcom/simibubi/create/content/redstone/displayLink/target/DisplayTargetStats;)Ljava/util/List;"
             )
