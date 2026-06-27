@@ -30,8 +30,19 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * crashes the whole Create ecosystem. By extending {@code Screen} directly, the
  * method is callable without any {@code @Shadow} or refmap involvement.
  *
- * <p>{@code guiLeft}/{@code guiTop} are mod-member fields ({@code AbstractSimiScreen})
- * so they keep {@code @Shadow(remap = false)} — mod members don't need the refmap.
+ * <p><b>Why {@code guiLeft}/{@code guiTop} are NOT shadowed</b>: they are inherited
+ * from catnip's {@code AbstractSimiScreen}. Even with {@code remap = false},
+ * shadowing inherited fields fails with "No refMap loaded" (issue #8). Instead we
+ * recompute the standard catnip centering formula
+ * {@code (width - windowWidth) / 2} — which equals
+ * {@code (this.width - background.getWidth()) / 2} because {@code DisplayLinkScreen}
+ * calls {@code setWindowSize(background.getWidth(), background.getHeight())} and
+ * never sets a window offset. {@code this.width}/{@code this.height} are vanilla
+ * {@code Screen} public fields, no shadow needed.
+ *
+ * <p>{@code background}/{@code blockEntity} are declared directly on
+ * {@code DisplayLinkScreen} (not inherited), so their
+ * {@code @Shadow(remap = false)} is reliable.
  */
 @Mixin(DisplayLinkScreen.class)
 public abstract class DisplayLinkScreenMixin extends Screen {
@@ -46,12 +57,6 @@ public abstract class DisplayLinkScreenMixin extends Screen {
     @Shadow(remap = false)
     private DisplayLinkBlockEntity blockEntity;
 
-    @Shadow(remap = false)
-    protected int guiLeft;
-
-    @Shadow(remap = false)
-    protected int guiTop;
-
     @Unique
     private boolean createWebBoard$webSynced = false;
 
@@ -59,9 +64,15 @@ public abstract class DisplayLinkScreenMixin extends Screen {
     private void createWebBoard$addWebToggle(CallbackInfo ci) {
         createWebBoard$webSynced = blockEntity.getSourceConfig().getBoolean(WebMirror.NBT_KEY);
 
+        int bgW = background.getWidth();
+        int bgH = background.getHeight();
+        // Recompute catnip's AbstractSimiScreen centering (offsets are 0 for DisplayLinkScreen).
+        int guiLeft = (this.width - bgW) / 2;
+        int guiTop = (this.height - bgH) / 2;
+
         int w = 66;
-        int x = guiLeft + background.getWidth() - 33 - w - 2;
-        int y = guiTop + background.getHeight() - 23;
+        int x = guiLeft + bgW - 33 - w - 2;
+        int y = guiTop + bgH - 23;
 
         Button btn = Button.builder(createWebBoard$label(), b -> {
             createWebBoard$webSynced = !createWebBoard$webSynced;
