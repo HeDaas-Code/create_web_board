@@ -98,6 +98,8 @@ public class HttpServer {
             LOGGER.warn("[web_board] HTTP server stop failed: {}", e.toString());
         } finally {
             app = null;
+            // Drain pending WS broadcasts (e.g. final remove events) then stop the worker thread.
+            hub.shutdown();
         }
     }
 

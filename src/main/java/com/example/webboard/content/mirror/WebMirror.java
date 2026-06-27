@@ -2,6 +2,7 @@ package com.example.webboard.content.mirror;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 
 import com.example.webboard.content.registry.BoardContent;
 import com.example.webboard.content.registry.BoardRegistry;
@@ -26,11 +27,31 @@ import net.minecraft.world.level.block.entity.BlockEntity;
  * <p>The toggle state is stored in the link's source-config CompoundTag under {@link #NBT_KEY},
  * so it piggy-backs on Create's existing {@code DisplayLinkConfigurationPacket} + NBT
  * persistence — no custom networking or BlockEntity fields required.
+ *
+ * <p><b>Performance</b>: {@code transferData} fires every few ticks per active Display Link.
+ * Without dedup, every refresh rebuilt the lines, allocated a {@link BoardContent}, mutated the
+ * registry, fired a {@code ChangeEvent.Put} listener, built a JSON string and pushed it to every
+ * WebSocket session — <em>all on the game thread</em>. That froze the game once several links
+ * were active. Two fixes:
+ * <ul>
+ *   <li><b>Here</b>: dedup. We cache the last-sent {@code (sourceType, lines)} per board name;
+ *       if unchanged we skip {@link BoardRegistry#put} entirely. Display content is usually
+ *       stable for long stretches (e.g. an item count), so the common case becomes a cheap
+ *       list-equality check after the first broadcast.</li>
+ *   <li>In {@code WebSocketHub}: the JSON-build + WS-send is dispatched to a dedicated
+ *       daemon thread, so the game thread only does the registry {@code put} (a
+ *       {@code ConcurrentHashMap} op — microseconds).</li>
+ * </ul>
  */
 public final class WebMirror {
 
     /** NBT key inside the Display Link's source-config tag. */
     public static final String NBT_KEY = "WebSynced";
+
+    /** Last-sent content per board, used to suppress no-op refreshes. Keyed by board name. */
+    private record Cached(String sourceType, List<String> lines) {}
+
+    private static final ConcurrentHashMap<String, Cached> LAST_SENT = new ConcurrentHashMap<>();
 
     private WebMirror() {}
 
@@ -45,6 +66,8 @@ public final class WebMirror {
         CompoundTag cfg = context.sourceConfig();
         if (cfg == null || !cfg.getBoolean(NBT_KEY)) {
             // Toggle off (or never set): drop any previously mirrored board for this link.
+            // remove() is a no-op if the board isn't tracked; clear the dedup cache too.
+            LAST_SENT.remove(name);
             BoardRegistry.get().remove(name);
             return;
         }
@@ -54,6 +77,17 @@ public final class WebMirror {
 
         ResourceLocation id = CreateBuiltInRegistries.DISPLAY_SOURCE.getKey(source);
         String sourceType = id != null ? id.toString() : "unknown";
+
+        // Dedup: if nothing visible changed since the last refresh, skip the registry put and
+        // the downstream WS broadcast entirely. lastUpdatedMs is intentionally NOT compared —
+        // a no-op refresh shouldn't churn the dashboard's "updated" timestamp either.
+        Cached prev = LAST_SENT.get(name);
+        if (prev != null
+                && prev.sourceType().equals(sourceType)
+                && prev.lines().equals(lines)) {
+            return;
+        }
+        LAST_SENT.put(name, new Cached(sourceType, lines));
 
         BoardRegistry.get().put(BoardContent.of(name, sourceType, lines));
     }
