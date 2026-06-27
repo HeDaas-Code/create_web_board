@@ -5,6 +5,7 @@ import com.mojang.blaze3d.pipeline.TextureTarget;
 import com.mojang.blaze3d.platform.GlConst;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.PoseStack;
+import com.mojang.blaze3d.vertex.VertexSorting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -12,6 +13,7 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import org.joml.Matrix4f;
 import org.lwjgl.opengl.GL11;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -108,6 +110,20 @@ public final class ItemIconRenderer {
             RenderSystem.clearColor(0, 0, 0, 0);
             RenderSystem.clear(GlConst.GL_COLOR_BUFFER_BIT, false);
 
+            // Set an ortho projection matching the 32×32 FBO. GuiGraphics.renderItem uses
+            // RenderSystem.getProjectionMatrix(); without this it inherits the main window's
+            // projection (e.g. 1920×1080), the item renders at ~1px, and the read-back PNG is
+            // essentially empty (the "icons don't render" bug). GUI convention: top-left origin.
+            // Save + restore so the rest of the frame's rendering isn't affected.
+            Matrix4f savedProjection = RenderSystem.getProjectionMatrix();
+            RenderSystem.setProjectionMatrix(
+                    new Matrix4f().setOrtho(0, ICON_SIZE, ICON_SIZE, 0, 1000, 3000),
+                    VertexSorting.ORTHO_Z_ONLY);
+            // Scissor may be left active by the previous frame's GUI rendering — disable it
+            // so the item isn't culled against the main window's scissor box.
+            boolean scissorWasOn = GL11.glIsEnabled(GL11.GL_SCISSOR_TEST);
+            if (scissorWasOn) GL11.glDisable(GL11.GL_SCISSOR_TEST);
+
             Minecraft mc = Minecraft.getInstance();
             GuiGraphics gg = new GuiGraphics(mc, mc.renderBuffers().bufferSource());
             PoseStack pose = gg.pose();
@@ -118,6 +134,10 @@ public final class ItemIconRenderer {
             gg.renderItem(stack, 0, 0);
             gg.flush();
             pose.popPose();
+
+            // Restore projection + scissor so the rest of this frame renders normally.
+            RenderSystem.setProjectionMatrix(savedProjection, VertexSorting.ORTHO_Z_ONLY);
+            if (scissorWasOn) GL11.glEnable(GL11.GL_SCISSOR_TEST);
 
             byte[] png = readFboToPng();
             fbo.unbindWrite();

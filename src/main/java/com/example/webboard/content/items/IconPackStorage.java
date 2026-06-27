@@ -134,7 +134,15 @@ public final class IconPackStorage {
             names.put(itemId, localizedName);
         }
         dirty = true;
+        // Log every Nth store so the operator can see uploads landing without flooding the log.
+        long n = storeCount.incrementAndGet();
+        if (n == 1 || n == 100 || n == 1000 || n % 5000 == 0) {
+            LOGGER.info("[web_board] icon pack received icon #{}: {} (total cached: {})",
+                    n, itemId, icons.size());
+        }
     }
+
+    private final java.util.concurrent.atomic.AtomicLong storeCount = new java.util.concurrent.atomic.AtomicLong();
 
     /** Snapshot of all known (id, localized name) pairs. Used by item search to show 中文名. */
     public Map<String, String> allNames() {
