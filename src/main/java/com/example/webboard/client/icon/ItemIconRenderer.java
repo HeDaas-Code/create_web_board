@@ -118,7 +118,7 @@ public final class ItemIconRenderer {
             Matrix4f savedProjection = RenderSystem.getProjectionMatrix();
             RenderSystem.setProjectionMatrix(
                     new Matrix4f().setOrtho(0, ICON_SIZE, ICON_SIZE, 0, 1000, 3000),
-                    VertexSorting.ORTHO_Z_ONLY);
+                    VertexSorting.ORTHOGRAPHIC_Z);
             // Scissor may be left active by the previous frame's GUI rendering — disable it
             // so the item isn't culled against the main window's scissor box.
             boolean scissorWasOn = GL11.glIsEnabled(GL11.GL_SCISSOR_TEST);
@@ -136,7 +136,7 @@ public final class ItemIconRenderer {
             pose.popPose();
 
             // Restore projection + scissor so the rest of this frame renders normally.
-            RenderSystem.setProjectionMatrix(savedProjection, VertexSorting.ORTHO_Z_ONLY);
+            RenderSystem.setProjectionMatrix(savedProjection, VertexSorting.ORTHOGRAPHIC_Z);
             if (scissorWasOn) GL11.glEnable(GL11.GL_SCISSOR_TEST);
 
             byte[] png = readFboToPng();
