@@ -1,20 +1,21 @@
-// Create Web Board — dashboard client
+// Create Web Board — kanban dashboard client
+//
+// Renders every mirrored Display Link as its own card in a responsive grid.
+// No sidebar / no selection — each board is always visible, like a Feishu board.
 //
 // Wire-up:
 //   - WebSocket at /ws for live board:update / board:remove events
-//   - REST fallback: /api/boards on connect, /api/boards/{name} on select
+//   - REST fallback: /api/boards on connect (and every 5s as safety net)
 //   - /api/health polled for ws connection count shown in the topbar
 //   - Reconnect with exponential backoff (cap 10s)
 //
 // Element map (see index.html):
-//   #status-dot, #status-text       — WS status pill
-//   #board-count, #ws-count, #clock — topbar metrics
-//   #search                          — sidebar filter input
-//   #board-list                      — <ul> of boards
-//   #selected-name, #chips           — main header title + source-type chip
-//   #live-badge                      — green "live" pill (shown when a board is selected)
-//   #placeholder, #lines             — empty-state svg vs <ol> of <li> per line
-//   #updated, #line-count            — footer
+//   #status-dot, #status-text  — WS status pill
+//   #board-count, #ws-count    — topbar stats
+//   #clock                      — local clock
+//   #search                     — filter input (matches name or sourceType)
+//   #board-grid                 — <main>, card container
+//   #empty-state                — shown when no boards (or all filtered out)
 
 (function () {
     "use strict";
@@ -27,22 +28,15 @@
         wsCount: $("ws-count"),
         clock: $("clock"),
         search: $("search"),
-        boardList: $("board-list"),
-        selectedName: $("selected-name"),
-        chips: $("chips"),
-        liveBadge: $("live-badge"),
-        placeholder: $("placeholder"),
-        lines: $("lines"),
-        updated: $("updated"),
-        lineCount: $("line-count"),
+        boardGrid: $("board-grid"),
+        emptyState: $("empty-state"),
     };
 
     const state = {
         boards: new Map(),    // name -> BoardContent
-        selected: null,
         ws: null,
         backoff: 500,         // ms, doubles on failure, cap 10s
-        filter: "",           // current sidebar filter query (lower-case)
+        filter: "",           // current filter query (lower-case)
     };
 
     // ---------- WebSocket ----------
@@ -54,7 +48,7 @@
         state.ws = ws;
 
         ws.onopen = () => {
-            setStatus("ok", "connected");
+            setStatus("ok", "已连接");
             state.backoff = 500;
         };
 
@@ -65,14 +59,13 @@
         };
 
         ws.onclose = () => {
-            setStatus("off", "disconnected");
+            setStatus("off", "已断开");
             state.ws = null;
             scheduleReconnect();
         };
 
         ws.onerror = () => {
-            // onclose will fire after; reconnect there.
-            setStatus("err", "error");
+            setStatus("err", "连接错误");
         };
     }
 
@@ -87,18 +80,15 @@
             case "snapshot":
                 state.boards.clear();
                 (msg.boards || []).forEach((b) => state.boards.set(b.name, b));
-                renderSidebar();
-                renderSelected();
+                render();
                 break;
             case "update":
                 state.boards.set(msg.board.name, msg.board);
-                renderSidebar();
-                if (state.selected === msg.board.name) renderSelected();
+                render();
                 break;
             case "remove":
                 state.boards.delete(msg.name);
-                if (state.selected === msg.name) clearSelected();
-                renderSidebar();
+                render();
                 break;
             default:
                 // unknown — ignore
@@ -112,21 +102,17 @@
             const r = await fetch("/api/boards");
             if (!r.ok) return;
             const list = await r.json();
-            state.boards.clear();
-            list.forEach((b) => state.boards.set(b.name, b));
-            renderSidebar();
-            if (state.selected) renderSelected();
+            const next = new Map();
+            list.forEach((b) => next.set(b.name, b));
+            // Only re-render if something actually changed (cheap shallow compare).
+            if (!sameKeys(state.boards, next)) {
+                state.boards = next;
+                render();
+            } else {
+                // refresh content in-place (timestamps may have advanced)
+                state.boards = next;
+            }
         } catch (_) { /* offline; WS will heal */ }
-    }
-
-    async function fetchOne(name) {
-        try {
-            const r = await fetch("/api/boards/" + encodeURIComponent(name));
-            if (!r.ok) { clearSelected(); return; }
-            const b = await r.json();
-            state.boards.set(b.name, b);
-            renderSelected();
-        } catch (_) { /* ignore */ }
     }
 
     async function fetchHealth() {
@@ -145,117 +131,95 @@
         els.statusText.textContent = text;
     }
 
-    function matchesFilter(name, sourceType) {
+    function matchesFilter(b) {
         if (!state.filter) return true;
-        if (name && name.toLowerCase().includes(state.filter)) return true;
-        if (sourceType && sourceType.toLowerCase().includes(state.filter)) return true;
+        if (b.name && b.name.toLowerCase().includes(state.filter)) return true;
+        if (b.sourceType && b.sourceType.toLowerCase().includes(state.filter)) return true;
         return false;
     }
 
-    function renderSidebar() {
-        const all = Array.from(state.boards.values())
-            .slice()
-            .sort((a, b) => a.name.localeCompare(b.name));
-        const visible = all.filter((b) => matchesFilter(b.name, b.sourceType));
+    function render() {
+        const all = Array.from(state.boards.values()).slice().sort((a, b) => a.name.localeCompare(b.name));
+        const visible = all.filter(matchesFilter);
 
         els.boardCount.textContent = String(all.length);
 
-        if (all.length === 0) {
-            els.boardList.innerHTML =
-                '<li class="empty">' +
-                '<span class="empty-icon">⌖</span>' +
-                "No boards yet." +
-                '<span class="empty-hint">Place a Display Link, open it, and toggle <b>Web: ON</b>.</span>' +
-                "</li>";
-            return;
-        }
-
+        // Empty state: show the big friendly placeholder whenever there's nothing to show.
         if (visible.length === 0) {
-            els.boardList.innerHTML =
-                '<li class="empty">' +
-                '<span class="empty-icon">∅</span>' +
-                "No boards match <b>" + escapeHtml(state.filter) + "</b>." +
-                "</li>";
+            els.boardGrid.innerHTML = "";
+            els.emptyState.hidden = false;
             return;
         }
+        els.emptyState.hidden = true;
 
-        // Rebuild list. Cheap enough for hundreds of boards; for thousands we'd diff.
+        // Rebuild the grid. For typical dashboards (tens of boards) a full rebuild is cheap
+        // and avoids the bookkeeping of diffing. If this ever scales to hundreds, switch to
+        // keyed updates (re-use existing .card nodes by data-name).
         const frag = document.createDocumentFragment();
-        visible.forEach((b) => {
-            const li = document.createElement("li");
-            li.className = "board-item" + (state.selected === b.name ? " selected" : "");
-            li.dataset.name = b.name;
-
-            const n = document.createElement("div");
-            n.className = "name";
-            n.textContent = b.name;
-
-            const s = document.createElement("span");
-            s.className = "source";
-            s.textContent = shortSource(b.sourceType);
-
-            li.appendChild(n);
-            li.appendChild(s);
-            li.addEventListener("click", () => selectBoard(b.name));
-            frag.appendChild(li);
-        });
-        els.boardList.innerHTML = "";
-        els.boardList.appendChild(frag);
+        visible.forEach((b) => frag.appendChild(renderCard(b)));
+        els.boardGrid.innerHTML = "";
+        els.boardGrid.appendChild(frag);
     }
 
-    function renderSelected() {
-        const b = state.boards.get(state.selected);
-        if (!b) { clearSelected(); return; }
+    function renderCard(b) {
+        const card = document.createElement("article");
+        card.className = "card";
+        card.dataset.name = b.name;
 
-        els.selectedName.textContent = b.name;
+        // Header: title + live badge
+        const head = document.createElement("header");
+        head.className = "card-head";
 
-        // Chips: source-type as the single accent chip.
-        els.chips.innerHTML = "";
+        const title = document.createElement("h3");
+        title.className = "card-title";
+        title.textContent = b.name;
+        title.title = b.name;
+
+        const live = document.createElement("span");
+        live.className = "card-live";
+        live.innerHTML = '<span class="live-dot"></span>live';
+
+        head.appendChild(title);
+        head.appendChild(live);
+
+        // Meta: source-type chip + update time
+        const meta = document.createElement("div");
+        meta.className = "card-meta";
+
         if (b.sourceType) {
             const chip = document.createElement("span");
-            chip.className = "chip accent";
+            chip.className = "chip";
             chip.textContent = shortSource(b.sourceType);
             chip.title = b.sourceType;
-            els.chips.appendChild(chip);
+            meta.appendChild(chip);
         }
 
-        // Live badge: shown whenever a board is selected.
-        els.liveBadge.hidden = false;
+        const time = document.createElement("span");
+        time.className = "card-time";
+        time.textContent = formatTime(b.lastUpdatedMs);
+        time.title = "最后更新";
+        meta.appendChild(time);
 
-        // Lines: <li> per line, replacing the old <pre> textContent join.
-        els.placeholder.style.display = "none";
-        els.lines.innerHTML = "";
-        const lines = (b.lines && b.lines.length) ? b.lines : [];
-        const frag = document.createDocumentFragment();
-        lines.forEach((line) => {
+        // Lines
+        const lines = document.createElement("ol");
+        lines.className = "card-lines";
+        (b.lines || []).forEach((line) => {
             const li = document.createElement("li");
             li.textContent = line;
-            frag.appendChild(li);
+            lines.appendChild(li);
         });
-        els.lines.appendChild(frag);
 
-        const count = lines.length;
-        els.lineCount.textContent = count + (count === 1 ? " line" : " lines");
-        els.updated.textContent = "updated " + formatTime(b.lastUpdatedMs);
-    }
+        // Footer
+        const foot = document.createElement("footer");
+        foot.className = "card-foot";
+        const count = (b.lines || []).length;
+        foot.textContent = count + (count === 1 ? " 行" : " 行") + " · 实时更新";
 
-    function clearSelected() {
-        state.selected = null;
-        els.selectedName.textContent = "Select a board";
-        els.chips.innerHTML = "";
-        els.liveBadge.hidden = true;
-        els.lines.innerHTML = "";
-        els.placeholder.style.display = "";
-        els.updated.textContent = "—";
-        els.lineCount.textContent = "0 lines";
-    }
-
-    function selectBoard(name) {
-        state.selected = name;
-        renderSidebar();
-        renderSelected();
-        // Always re-fetch — WS may have missed an update.
-        fetchOne(name);
+        card.appendChild(head);
+        card.appendChild(meta);
+        card.appendChild(lines);
+        card.appendChild(foot);
+        return card;
     }
 
     // ---------- Helpers ----------
@@ -274,10 +238,10 @@
         return pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds());
     }
 
-    function escapeHtml(s) {
-        return String(s).replace(/[&<>"']/g, (c) => ({
-            "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-        })[c]);
+    function sameKeys(a, b) {
+        if (a.size !== b.size) return false;
+        for (const k of a.keys()) if (!b.has(k)) return false;
+        return true;
     }
 
     function tickClock() {
@@ -290,18 +254,15 @@
 
     els.search.addEventListener("input", (ev) => {
         state.filter = ev.target.value.trim().toLowerCase();
-        renderSidebar();
+        render();
     });
 
-    // Local clock — ticks every second, no server round-trip needed.
     tickClock();
     setInterval(tickClock, 1000);
 
-    // /api/health for ws connection count — poll every 5s (cheap, single JSON object).
     fetchHealth();
     setInterval(fetchHealth, 5000);
 
-    // REST poll for board list every 5s as a safety net (covers missed WS events).
     setInterval(fetchAll, 5000);
 
     connect();

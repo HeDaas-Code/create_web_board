@@ -44,21 +44,19 @@ public class HttpServer {
             return;
         }
         app = Javalin.create(cfg -> {
-            // Same classpath directory served on two paths:
-            //   "/"   → http://127.0.0.1:8080/      resolves to web/index.html
-            //   "/static/*" → http://127.0.0.1:8080/static/* for explicit asset URLs
-            // Javalin 6 requires distinct static-file entries for distinct hosted paths
-            // (it does not auto-merge two paths to the same directory).
+            // Single static-files entry: the classpath dir /assets/create_web_board/web
+            // is served at "/", so:
+            //   GET /          → index.html (Javalin serves index.html at the hosted root)
+            //   GET /style.css → style.css
+            //   GET /app.js    → app.js
+            // The previous setup also mounted the same dir at "/static" — that was unused
+            // (index.html references /style.css and /app.js directly) and the duplicate
+            // mount was a suspected cause of inconsistent asset resolution. Dropping it.
             cfg.staticFiles.add(staticDir -> {
                 staticDir.hostedPath = "/";
                 staticDir.directory = "/assets/create_web_board/web";
                 staticDir.location = Location.CLASSPATH;
                 staticDir.skipFileFunction = req -> false;  // serve index.html on "/"
-            });
-            cfg.staticFiles.add(staticDir -> {
-                staticDir.hostedPath = "/static";
-                staticDir.directory = "/assets/create_web_board/web";
-                staticDir.location = Location.CLASSPATH;
             });
             // Reasonable defaults for a localhost dashboard — never expose publicly.
             cfg.showJavalinBanner = false;
