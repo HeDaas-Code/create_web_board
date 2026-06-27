@@ -83,7 +83,7 @@ public final class BoardDatabase {
 
             initialized = true;
             LOGGER.info("[web_board] SQLite database initialized at {}", DB_PATH);
-        } catch (SQLException e) {
+        } catch (Exception e) {
             LOGGER.error("[web_board] Failed to initialize database: {}", e.toString(), e);
             initialized = false;
             closeConnection();
