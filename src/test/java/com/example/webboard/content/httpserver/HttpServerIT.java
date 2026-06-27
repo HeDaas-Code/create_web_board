@@ -156,6 +156,119 @@ class HttpServerIT {
         assertTrue(msg.contains("\"name\":\"ws-board\""));
     }
 
+    // ---- Tags API ----
+    // These exercise the product-tagging feature added in v0.5.0. The dashboard clusters cards
+    // by tag, and the modal's tag editor PUTs here. setTags fires a Put event so the WS hub
+    // rebroadcasts the updated tag array to all connected browsers.
+
+    @Test
+    void putTags_existingBoard_returnsUpdatedTags() throws Exception {
+        registry.put(BoardContent.of("tagged", "create_web_board:web_board", List.of("x")));
+
+        HttpResponse<String> r = http.send(
+                HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/api/boards/tagged/tags"))
+                        .timeout(Duration.ofSeconds(2))
+                        .header("Content-Type", "application/json")
+                        .PUT(HttpRequest.BodyPublishers.ofString("{\"tags\":[\"冶炼\",\"一楼\"]}"))
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+
+        assertEquals(200, r.statusCode());
+        assertTrue(r.body().contains("\"冶炼\""), "body should contain tag 冶炼: " + r.body());
+        assertTrue(r.body().contains("\"一楼\""));
+        // The registry should now reflect the update.
+        assertEquals(List.of("冶炼", "一楼"), registry.get("tagged").tags());
+    }
+
+    @Test
+    void putTags_missingBoard_returns404() throws Exception {
+        HttpResponse<String> r = http.send(
+                HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/api/boards/nope/tags"))
+                        .timeout(Duration.ofSeconds(2))
+                        .header("Content-Type", "application/json")
+                        .PUT(HttpRequest.BodyPublishers.ofString("{\"tags\":[\"a\"]}"))
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertEquals(404, r.statusCode());
+    }
+
+    @Test
+    void putTags_emptyArray_clearsTags() throws Exception {
+        registry.put(BoardContent.of("clear-me", "create_web_board:web_board", List.of("x")));
+
+        http.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/api/boards/clear-me/tags"))
+                .timeout(Duration.ofSeconds(2)).header("Content-Type", "application/json")
+                .PUT(HttpRequest.BodyPublishers.ofString("{\"tags\":[\"temp\"]}")).build(),
+                HttpResponse.BodyHandlers.ofString());
+
+        HttpResponse<String> r = http.send(
+                HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/api/boards/clear-me/tags"))
+                        .timeout(Duration.ofSeconds(2)).header("Content-Type", "application/json")
+                        .PUT(HttpRequest.BodyPublishers.ofString("{\"tags\":[]}"))
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+
+        assertEquals(200, r.statusCode());
+        assertTrue(r.body().contains("\"tags\":[]"), "tags should be empty: " + r.body());
+        assertTrue(registry.get("clear-me").tags().isEmpty());
+    }
+
+    // ---- Product items API ----
+    // v0.5.0 added multi-item selection to the modal — a board can represent a line producing
+    // several items. PUT /api/boards/{name}/items replaces the whole item-id list.
+
+    @Test
+    void putItems_existingBoard_returnsUpdatedItemIds() throws Exception {
+        registry.put(BoardContent.of("producer", "create_web_board:web_board", List.of("x")));
+
+        HttpResponse<String> r = http.send(
+                HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/api/boards/producer/items"))
+                        .timeout(Duration.ofSeconds(2))
+                        .header("Content-Type", "application/json")
+                        .PUT(HttpRequest.BodyPublishers.ofString(
+                                "{\"itemIds\":[\"minecraft:iron_ingot\",\"create:cogwheel\"]}"))
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+
+        assertEquals(200, r.statusCode());
+        assertTrue(r.body().contains("minecraft:iron_ingot"), "body: " + r.body());
+        assertTrue(r.body().contains("create:cogwheel"));
+        assertEquals(List.of("minecraft:iron_ingot", "create:cogwheel"),
+                registry.get("producer").itemIds());
+    }
+
+    @Test
+    void putItems_missingBoard_returns404() throws Exception {
+        HttpResponse<String> r = http.send(
+                HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/api/boards/nope/items"))
+                        .timeout(Duration.ofSeconds(2))
+                        .header("Content-Type", "application/json")
+                        .PUT(HttpRequest.BodyPublishers.ofString("{\"itemIds\":[\"minecraft:stick\"]}"))
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertEquals(404, r.statusCode());
+    }
+
+    // ---- Icon-pack status ----
+    // Without a client uploading rendered icons, IconPackStorage is uninitialized — the status
+    // endpoint must report count=0 + initialized=false so the dashboard can show its "no icons
+    // yet" hint. (When a client connects and uploads, count goes up; that path needs a live MC
+    // client and is covered by the field test instead.)
+
+    @Test
+    void iconPackStatus_whenUninitialized_returnsZeroCount() throws Exception {
+        HttpResponse<String> r = http.send(
+                HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/api/icon-pack/status"))
+                        .timeout(Duration.ofSeconds(2))
+                        .GET().build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertEquals(200, r.statusCode());
+        // IconPackStorage is not init'd in the test JVM (no MC server running), so this is the
+        // "pure dedicated server, no client yet" state.
+        assertTrue(r.body().contains("\"count\":0"), "body: " + r.body());
+        assertTrue(r.body().contains("\"initialized\":false"), "body: " + r.body());
+    }
+
     // ---- helpers ----
 
     private static int pickFreePort() {

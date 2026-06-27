@@ -5,6 +5,7 @@ import com.mojang.blaze3d.pipeline.TextureTarget;
 import com.mojang.blaze3d.platform.GlConst;
 import com.mojang.blaze3d.platform.Lighting;
 import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.blaze3d.vertex.ByteBufferBuilder;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexSorting;
 import net.minecraft.client.Minecraft;
@@ -16,6 +17,7 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import org.joml.Matrix4f;
+import org.joml.Matrix4fStack;
 import org.lwjgl.opengl.GL11;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -132,8 +134,12 @@ public final class ItemIconRenderer {
                     new Matrix4f().setOrtho(0, ICON_SIZE, ICON_SIZE, 0, 1000, 21000),
                     VertexSorting.ORTHOGRAPHIC_Z);
 
-            PoseStack mvStack = RenderSystem.getModelViewStack();
-            mvStack.pushPose();
+            // 1.21.1: RenderSystem.getModelViewStack() returns org.joml.Matrix4fStack (not
+            // PoseStack — that changed in the 1.20.5 JOML migration). Matrix4fStack uses
+            // pushMatrix/popMatrix instead of PoseStack's pushPose/popPose; identity() is
+            // inherited from Matrix4f. applyModelViewMatrix() signature is unchanged.
+            Matrix4fStack mvStack = RenderSystem.getModelViewStack();
+            mvStack.pushMatrix();
             mvStack.identity();
             RenderSystem.applyModelViewMatrix();
 
@@ -153,8 +159,10 @@ public final class ItemIconRenderer {
             // Use a fresh BufferSource instead of the shared mc.renderBuffers().bufferSource():
             // the shared one may hold pending vertices from earlier in the frame; flushing those
             // into our 32×32 FBO would pollute the icon. A private source is flushed and discarded.
-            MultiBufferSource.BufferSource bufSrc = new MultiBufferSource.BufferSource(
-                    new com.mojang.blaze3d.vertex.ByteBufferBuilder(256));
+            // 1.21.1: BufferSource's constructor is protected, so use MultiBufferSource.immediate(...)
+            // (the static factory) instead of `new BufferSource(...)`.
+            ByteBufferBuilder builder = new ByteBufferBuilder(256);
+            MultiBufferSource.BufferSource bufSrc = MultiBufferSource.immediate(builder);
             GuiGraphics gg = new GuiGraphics(mc, bufSrc);
             PoseStack pose = gg.pose();
             pose.pushPose();
@@ -163,6 +171,7 @@ public final class ItemIconRenderer {
             gg.renderItem(stack, 0, 0);
             gg.flush();
             bufSrc.endBatch();
+            builder.close();
             pose.popPose();
 
             // ---- Restore all GL state ----
@@ -170,7 +179,7 @@ public final class ItemIconRenderer {
             if (scissorWasOn) GL11.glEnable(GL11.GL_SCISSOR_TEST);
             if (!depthWasOn) RenderSystem.disableDepthTest();
             if (!blendWasOn) RenderSystem.disableBlend();
-            mvStack.popPose();
+            mvStack.popMatrix();
             RenderSystem.applyModelViewMatrix();
             RenderSystem.setProjectionMatrix(savedProjection, VertexSorting.ORTHOGRAPHIC_Z);
 
@@ -182,7 +191,7 @@ public final class ItemIconRenderer {
                 // reject it instead of caching + uploading a blank icon to the server. This is
                 // what makes a future renderer regression immediately visible in the log rather
                 // than silently filling the dashboard with empty thumbnails.
-                int opaque = countOpaquePixels(png);
+                int opaque = IconPngCodec.countOpaquePixels(png, ICON_SIZE, ICON_SIZE);
                 if (opaque < MIN_OPAQUE_PIXELS) {
                     LOGGER.warn("[web_board] rendered icon for {} is blank ({} opaque pixels in {} bytes) — " +
                             "renderer state may be wrong, NOT caching/uploading. PNG bytes: {}",
@@ -226,130 +235,6 @@ public final class ItemIconRenderer {
      *  generous floor to avoid rejecting legitimately sparse items (e.g. a thin sword diagonal). */
     private static final int MIN_OPAQUE_PIXELS = 8;
 
-    /**
-     * Count pixels with alpha ≥ 8 in a 32×32 RGBA PNG. Used by the render quality gate to reject
-     * blank renders before they leak into the cache/upload pipeline. Parses the PNG manually
-     * (signature → IHDR → IDAT → inflate → unfilter scanlines) so we don't depend on MC's
-     * NativeImage, whose API shifts between versions.
-     *
-     * <p>Returns -1 if the PNG is malformed (so the caller can still accept the PNG — better to
-     * ship a possibly-blank icon than to reject a valid one because our parser is buggy).
-     */
-    private static int countOpaquePixels(byte[] png) {
-        try {
-            java.io.ByteArrayInputStream in = new java.io.ByteArrayInputStream(png);
-            // Verify PNG signature.
-            byte[] sig = new byte[8];
-            if (in.read(sig) != 8) return -1;
-            if (sig[0] != (byte) 0x89 || sig[1] != 0x50 || sig[2] != 0x4E || sig[3] != 0x47) return -1;
-
-            // Read chunks until IDAT.
-            byte[] idat = null;
-            int width = 0, height = 0, bitDepth = 0, colorType = 0;
-            while (true) {
-                int len = readIntBE(in);
-                byte[] type = new byte[4];
-                if (in.read(type) != 4) break;
-                byte[] data = new byte[len];
-                if (in.read(data) != len) return -1;
-                readIntBE(in); // CRC, ignore
-                String t = new String(type, java.nio.charset.StandardCharsets.US_ASCII);
-                if ("IHDR".equals(t)) {
-                    width = ((data[0] & 0xFF) << 24) | ((data[1] & 0xFF) << 16) | ((data[2] & 0xFF) << 8) | (data[3] & 0xFF);
-                    height = ((data[4] & 0xFF) << 24) | ((data[5] & 0xFF) << 16) | ((data[6] & 0xFF) << 8) | (data[7] & 0xFF);
-                    bitDepth = data[8] & 0xFF;
-                    colorType = data[9] & 0xFF;
-                } else if ("IDAT".equals(t)) {
-                    if (idat == null) idat = data;
-                    else {
-                        // Multiple IDAT chunks — concatenate.
-                        byte[] merged = new byte[idat.length + data.length];
-                        System.arraycopy(idat, 0, merged, 0, idat.length);
-                        System.arraycopy(data, 0, merged, idat.length, data.length);
-                        idat = merged;
-                    }
-                } else if ("IEND".equals(t)) {
-                    break;
-                }
-            }
-            if (idat == null || width != ICON_SIZE || height != ICON_SIZE) return -1;
-            if (bitDepth != 8) return -1;
-            // colorType 6 = RGBA. We only ever encode RGBA (see pngEncodeRgba).
-            if (colorType != 6) return -1;
-
-            // Inflate IDAT.
-            java.util.zip.Inflater inf = new java.util.zip.Inflater();
-            inf.setInput(idat);
-            // Each scanline: 1 filter byte + width * 4 bytes RGBA.
-            byte[] raw = new byte[height * (1 + width * 4)];
-            int off = 0;
-            while (off < raw.length) {
-                int n = inf.inflate(raw, off, raw.length - off);
-                if (n == 0) break;
-                off += n;
-            }
-            inf.end();
-            if (off < raw.length) return -1;
-
-            // Unfilter scanlines (PNG filters: 0=None, 1=Sub, 2=Up, 3=Avg, 4=Paeth).
-            int bpp = 4; // bytes per pixel for RGBA8
-            int stride = 1 + width * bpp;
-            byte[] pixels = new byte[height * width * bpp];
-            byte[] prevRow = new byte[width * bpp];
-            for (int y = 0; y < height; y++) {
-                int rowStart = y * stride;
-                int filter = raw[rowStart] & 0xFF;
-                byte[] cur = new byte[width * bpp];
-                System.arraycopy(raw, rowStart + 1, cur, 0, width * bpp);
-                switch (filter) {
-                    case 0: break; // None
-                    case 1: // Sub
-                        for (int x = bpp; x < cur.length; x++) cur[x] += cur[x - bpp];
-                        break;
-                    case 2: // Up
-                        for (int x = 0; x < cur.length; x++) cur[x] += prevRow[x];
-                        break;
-                    case 3: // Average
-                        for (int x = 0; x < cur.length; x++) {
-                            int left = x >= bpp ? (cur[x - bpp] & 0xFF) : 0;
-                            int up = prevRow[x] & 0xFF;
-                            cur[x] += (byte) ((left + up) / 2);
-                        }
-                        break;
-                    case 4: // Paeth
-                        for (int x = 0; x < cur.length; x++) {
-                            int a = x >= bpp ? (cur[x - bpp] & 0xFF) : 0;
-                            int b = prevRow[x] & 0xFF;
-                            int c = x >= bpp ? (prevRow[x - bpp] & 0xFF) : 0;
-                            int p = a + b - c;
-                            int pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
-                            int pred = (pa <= pb && pa <= pc) ? a : (pb <= pc) ? b : c;
-                            cur[x] += (byte) pred;
-                        }
-                        break;
-                    default: return -1;
-                }
-                System.arraycopy(cur, 0, pixels, y * width * bpp, cur.length);
-                prevRow = cur;
-            }
-
-            // Count pixels with alpha ≥ 8 (i.e. not essentially transparent).
-            int count = 0;
-            for (int i = 3; i < pixels.length; i += 4) {
-                if ((pixels[i] & 0xFF) >= 8) count++;
-            }
-            return count;
-        } catch (Exception e) {
-            return -1;
-        }
-    }
-
-    private static int readIntBE(java.io.InputStream in) throws java.io.IOException {
-        int a = in.read(), b = in.read(), c = in.read(), d = in.read();
-        if ((a | b | c | d) < 0) throw new java.io.EOFException();
-        return (a << 24) | (b << 16) | (c << 8) | d;
-    }
-
     private static byte[] readFboToPng() {
         // Bind the FBO's color texture and read its pixels back as RGBA.
         RenderSystem.bindTexture(fbo.getColorTextureId());
@@ -374,77 +259,11 @@ public final class ItemIconRenderer {
         }
 
         try {
-            return pngEncodeRgba(ICON_SIZE, ICON_SIZE, pixels);
+            return IconPngCodec.encodeRgba(ICON_SIZE, ICON_SIZE, pixels);
         } catch (Exception e) {
             LOGGER.warn("[web_board] PNG encode failed: {}", e.toString());
             return null;
         }
-    }
-
-    /**
-     * Minimal PNG encoder (RGBA, 8-bit). No external deps — keeps the jar small and avoids
-     * depending on MC's NativeImage (whose API shifts between MC versions). Compressed with
-     * java.util.zip (zlib deflate, same as PNG mandates).
-     */
-    private static byte[] pngEncodeRgba(int width, int height, byte[] rgba) throws java.io.IOException {
-        java.io.ByteArrayOutputStream raw = new java.io.ByteArrayOutputStream();
-        // PNG signature
-        raw.write(0x89); raw.write(0x50); raw.write(0x4E); raw.write(0x47);
-        raw.write(0x0D); raw.write(0x0A); raw.write(0x1A); raw.write(0x0A);
-
-        // IHDR
-        byte[] ihdr = new byte[13];
-        putInt(ihdr, 0, width);
-        putInt(ihdr, 4, height);
-        ihdr[8] = 8;     // bit depth
-        ihdr[9] = 6;     // color type: RGBA
-        ihdr[10] = 0;    // compression: deflate
-        ihdr[11] = 0;    // filter: standard
-        ihdr[12] = 0;    // interlace: none
-        writeChunk(raw, "IHDR", ihdr);
-
-        // IDAT: filter byte (0 = None) per scanline, then zlib-deflate the whole thing.
-        java.io.ByteArrayOutputStream scanlines = new java.io.ByteArrayOutputStream();
-        for (int y = 0; y < height; y++) {
-            scanlines.write(0); // filter type 0 (None)
-            scanlines.write(rgba, y * width * 4, width * 4);
-        }
-        java.util.zip.Deflater def = new java.util.zip.Deflater(java.util.zip.Deflater.BEST_COMPRESSION);
-        def.setInput(scanlines.toByteArray());
-        def.finish();
-        byte[] buf = new byte[8192];
-        java.io.ByteArrayOutputStream compressed = new java.io.ByteArrayOutputStream();
-        while (!def.finished()) {
-            int n = def.deflate(buf);
-            compressed.write(buf, 0, n);
-        }
-        writeChunk(raw, "IDAT", compressed.toByteArray());
-
-        // IEND
-        writeChunk(raw, "IEND", new byte[0]);
-        return raw.toByteArray();
-    }
-
-    private static void writeChunk(java.io.OutputStream out, String type, byte[] data) throws java.io.IOException {
-        byte[] typeBytes = type.getBytes(java.nio.charset.StandardCharsets.US_ASCII);
-        byte[] len = new byte[4];
-        putInt(len, 0, data.length);
-        out.write(len);
-        out.write(typeBytes);
-        out.write(data);
-        java.util.zip.CRC32 crc = new java.util.zip.CRC32();
-        crc.update(typeBytes);
-        crc.update(data);
-        byte[] crcBytes = new byte[4];
-        putInt(crcBytes, 0, (int) crc.getValue());
-        out.write(crcBytes);
-    }
-
-    private static void putInt(byte[] b, int off, int v) {
-        b[off]     = (byte) (v >>> 24);
-        b[off + 1] = (byte) (v >>> 16);
-        b[off + 2] = (byte) (v >>> 8);
-        b[off + 3] = (byte) v;
     }
 
     private static String localizedName(String itemId, ItemStack stack) {
