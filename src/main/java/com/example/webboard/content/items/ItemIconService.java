@@ -64,9 +64,19 @@ public final class ItemIconService {
     /**
      * Return the PNG bytes for an item's icon, or null if no texture could be resolved.
      * Results (including misses) are cached. Thread-safe.
+     *
+     * <p>Resolution order: (1) the rendered-icon pack uploaded by a client (JEI-style rendered
+     * icon with localized name) — this is what the dashboard prefers; (2) the raw PNG texture
+     * from the classpath (fallback for items the client hasn't uploaded yet, or for pure
+     * dedicated servers with no client connection).
      */
     public byte[] getIcon(String itemId) {
         if (itemId == null || itemId.isEmpty()) return null;
+        // (1) Rendered icon pack — preferred (matches what JEI shows in-game).
+        if (IconPackStorage.get().isInitialized() && IconPackStorage.get().hasIcon(itemId)) {
+            return IconPackStorage.get().getIcon(itemId);
+        }
+        // (2) Raw PNG texture fallback (covers items the client hasn't uploaded yet).
         if (missCache.containsKey(itemId)) return null;
         byte[] cached = iconCache.get(itemId);
         if (cached != null) return cached;
@@ -111,9 +121,14 @@ public final class ItemIconService {
     }
 
     /**
-     * Search the item catalog by id substring (case-insensitive). Empty query returns the first
-     * {@code limit} ids (alphabetical). The catalog is built on first call by iterating
-     * {@link BuiltInRegistries.ITEM} — covers vanilla + every registered mod item.
+     * Search the item catalog by id or localized-name substring (case-insensitive). Empty query
+     * returns the first {@code limit} ids (alphabetical). The catalog is built on first call by
+     * iterating {@link BuiltInRegistries.ITEM} — covers vanilla + every registered mod item.
+     *
+     * <p>The returned {@link ItemInfo#name()} is the localized name from the icon pack if
+     * available (e.g. "铁锭"), else the short id (e.g. "iron_ingot"). The dashboard picker
+     * shows this name; search matches against both id and localized name so users can type
+     * either "iron" or "铁锭".
      */
     public List<ItemInfo> search(String query, int limit) {
         List<String> ids = ensureCatalog();
@@ -121,8 +136,14 @@ public final class ItemIconService {
         int cap = limit > 0 ? limit : 50;
         List<ItemInfo> result = new ArrayList<>(Math.min(cap, ids.size()));
         for (String id : ids) {
-            if (q.isEmpty() || id.toLowerCase().contains(q)) {
-                result.add(new ItemInfo(id, shortName(id)));
+            String localizedName = IconPackStorage.get().isInitialized()
+                    ? IconPackStorage.get().getName(id) : null;
+            String displayName = (localizedName != null && !localizedName.isEmpty())
+                    ? localizedName : shortName(id);
+            if (q.isEmpty()
+                    || id.toLowerCase().contains(q)
+                    || displayName.toLowerCase().contains(q)) {
+                result.add(new ItemInfo(id, displayName));
                 if (result.size() >= cap) break;
             }
         }

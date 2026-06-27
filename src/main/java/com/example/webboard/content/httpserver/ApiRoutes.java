@@ -4,6 +4,7 @@ import com.example.webboard.content.persistence.BoardDatabase;
 import com.example.webboard.content.registry.BoardContent;
 import com.example.webboard.content.registry.BoardRegistry;
 
+import com.example.webboard.content.items.IconPackStorage;
 import com.example.webboard.content.items.ItemIconService;
 import com.example.webboard.content.mirror.SourceLabels;
 
@@ -136,9 +137,8 @@ public final class ApiRoutes {
 
         // GET /api/item-icon/{itemId} -- serve an item's texture PNG for dashboard thumbnails.
         // itemId is the full registry id (e.g. "minecraft:iron_ingot"), URL-encoded by the
-        // client. The ItemIconService reads the PNG straight from the classpath (every mod jar),
-        // so Create + all addon textures are reachable without a client resource manager. 404
-        // when no texture resolves; the client then shows a fallback glyph.
+        // client. Resolution order: (1) rendered icon pack uploaded by a client (JEI-style),
+        // (2) raw PNG texture read from the classpath (every mod jar). 404 when neither resolves.
         app.get("/api/item-icon/{itemId}", ctx -> {
             String itemId = ctx.pathParam("itemId");
             byte[] png = ItemIconService.get().getIcon(itemId);
@@ -151,6 +151,65 @@ public final class ApiRoutes {
             // cache aggressively to avoid re-fetching on every card render.
             ctx.header("Cache-Control", "public, max-age=3600");
             ctx.result(png);
+        });
+
+        // POST /api/item-icon/{itemId} -- upload a rendered icon (PNG body) + localized name.
+        // Called by the client-side renderer (ItemIconRenderer) one item at a time. The name
+        // goes in the X-Item-Name header (URL-encoded UTF-8) so the body stays pure PNG. The
+        // server buffers the write in-memory and debounces disk flush — same pattern as boards.
+        // itemId in the path is URL-encoded by the client; the name header is also URL-encoded
+        // to avoid Content-Type / charset ambiguity. Returns 204 on success.
+        app.post("/api/item-icon/{itemId}", ctx -> {
+            String itemId = ctx.pathParam("itemId");
+            if (!IconPackStorage.get().isInitialized()) {
+                ctx.status(503);
+                ctx.result("{\"error\":\"icon pack not initialized\"}");
+                return;
+            }
+            String nameHeader = ctx.header("X-Item-Name");
+            String localizedName = nameHeader != null && !nameHeader.isEmpty()
+                    ? java.net.URLDecoder.decode(nameHeader, java.nio.charset.StandardCharsets.UTF_8)
+                    : null;
+            byte[] png = ctx.bodyAsBytes();
+            if (png == null || png.length == 0) {
+                ctx.status(400);
+                ctx.result("{\"error\":\"empty body\"}");
+                return;
+            }
+            IconPackStorage.get().store(itemId, localizedName, png);
+            ctx.status(204);
+        });
+
+        // GET /api/icon-pack/status -- tells the dashboard + client renderer how many icons
+        // are cached. The dashboard shows a hint when zero (no client has uploaded yet); the
+        // client renderer uses it to skip items the server already has.
+        app.get("/api/icon-pack/status", ctx -> {
+            int count = IconPackStorage.get().isInitialized() ? IconPackStorage.get().size() : 0;
+            ctx.contentType("application/json");
+            ctx.result("{\"count\":" + count + ",\"initialized\":"
+                    + IconPackStorage.get().isInitialized() + "}");
+        });
+
+        // POST /api/items/names -- bulk-resolve item ids to localized names.
+        // Body: {"items":["minecraft:iron_ingot","create:cogwheel"]}
+        // Resp: {"minecraft:iron_ingot":"铁锭","create:cogwheel":"齿轮"}
+        // Used by the board modal's product thumbnail list (which only stores ids, not names)
+        // so it can show the same 中文名 the picker showed when the item was selected.
+        app.post("/api/items/names", ctx -> {
+            List<String> ids = JsonUtil.extractStringArrayField(ctx.body(), "items");
+            StringBuilder sb = new StringBuilder("{");
+            boolean first = true;
+            for (String id : ids) {
+                if (!first) sb.append(',');
+                first = false;
+                String name = IconPackStorage.get().isInitialized()
+                        ? IconPackStorage.get().getName(id) : null;
+                String display = (name != null && !name.isEmpty()) ? name : shortItemId(id);
+                sb.append(JsonUtil.quote(id)).append(':').append(JsonUtil.quote(display));
+            }
+            sb.append('}');
+            ctx.contentType("application/json");
+            ctx.result(sb.toString());
         });
 
         // GET /api/items/search?q=...&limit=... -- searchable item catalog for the product
@@ -236,5 +295,12 @@ public final class ApiRoutes {
         }
         sb.append(']');
         return sb.toString();
+    }
+
+    /** "minecraft:iron_ingot" -> "iron_ingot" (the part after the colon, or the whole id). */
+    private static String shortItemId(String itemId) {
+        if (itemId == null) return "";
+        int i = itemId.indexOf(':');
+        return i >= 0 ? itemId.substring(i + 1) : itemId;
     }
 }

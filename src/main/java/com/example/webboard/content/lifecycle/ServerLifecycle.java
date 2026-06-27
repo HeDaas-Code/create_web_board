@@ -4,6 +4,7 @@ import com.example.webboard.CreateWebBoard;
 import com.example.webboard.content.httpserver.ConfigLoader;
 import com.example.webboard.content.httpserver.HttpServer;
 import com.example.webboard.content.httpserver.ServerConfig;
+import com.example.webboard.content.items.IconPackStorage;
 import com.example.webboard.content.persistence.BoardDatabase;
 
 import net.neoforged.bus.api.SubscribeEvent;
@@ -52,6 +53,9 @@ public final class ServerLifecycle {
         // Initialize SQLite persistence and load boards from the previous session.
         BoardDatabase.get().init();
         com.example.webboard.content.registry.BoardRegistry.get().putAll(BoardDatabase.get().loadAll());
+        // Load the rendered-icon pack (uploaded by a client, or dropped as webboard-icons.zip).
+        // When absent, the dashboard falls back to raw PNG textures and short item ids.
+        IconPackStorage.get().init();
         httpServer = new HttpServer(cfg, com.example.webboard.content.registry.BoardRegistry.get());
         try {
             httpServer.start();

@@ -840,9 +840,44 @@
 
     // ---------- Product thumbnails (modal) ----------
 
-    function renderItemThumbs(b) {
+    /** Cache of itemId -> localized name (e.g. "minecraft:iron_ingot" -> "铁锭"). Populated
+     *  lazily from /api/items/names so modal thumbs show the same Chinese name the picker did. */
+    const itemNameCache = new Map();
+
+    async function fetchItemNames(ids) {
+        const missing = ids.filter((id) => !itemNameCache.has(id));
+        if (missing.length === 0) return;
+        try {
+            const r = await fetch("/api/items/names", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ items: missing }),
+            });
+            if (!r.ok) return;
+            const map = await r.json();
+            Object.keys(map).forEach((id) => itemNameCache.set(id, map[id]));
+        } catch (_) { /* ignore — thumbs fall back to short id */ }
+    }
+
+    async function renderItemThumbs(b) {
         els.itemThumbs.innerHTML = "";
-        (b.itemIds || []).forEach((id) => {
+        const ids = b.itemIds || [];
+        // Render immediately with short-id placeholders, then swap in localized names once
+        // the bulk-resolve resolves. Keeps the modal responsive even on slow networks.
+        const thumbs = renderThumbsSync(ids);
+        // After names arrive, update just the name spans (no full re-render — preserves the
+        // user's hover/focus state on the remove buttons).
+        fetchItemNames(ids).then(() => {
+            thumbs.forEach(({ id, nameEl }) => {
+                const name = itemNameCache.get(id);
+                if (name) nameEl.textContent = name;
+            });
+        });
+    }
+
+    function renderThumbsSync(ids) {
+        const thumbs = [];
+        ids.forEach((id) => {
             const thumb = document.createElement("span");
             thumb.className = "item-thumb";
             const img = document.createElement("img");
@@ -858,7 +893,9 @@
             });
             const nameEl = document.createElement("span");
             nameEl.className = "item-thumb-name";
-            nameEl.textContent = shortItemId(id);
+            // Show cached localized name if we have it; otherwise short id until the
+            // bulk-resolve arrives and updates this span.
+            nameEl.textContent = itemNameCache.get(id) || shortItemId(id);
             const rm = document.createElement("button");
             rm.className = "item-thumb-remove";
             rm.textContent = "×";
@@ -869,7 +906,9 @@
             thumb.appendChild(nameEl);
             thumb.appendChild(rm);
             els.itemThumbs.appendChild(thumb);
+            thumbs.push({ id, nameEl });
         });
+        return thumbs;
     }
 
     function removeItem(itemId) {
@@ -961,7 +1000,7 @@
             card.dataset.id = info.id;
             const img = document.createElement("img");
             img.src = "/api/item-icon/" + encodeURIComponent(info.id);
-            img.alt = info.id;
+            img.alt = info.name || info.id;
             img.loading = "lazy";
             img.addEventListener("error", () => {
                 const ph = document.createElement("span");
@@ -971,7 +1010,9 @@
             });
             const nameEl = document.createElement("span");
             nameEl.className = "item-card-name";
-            nameEl.textContent = info.id;
+            // Show the localized name (e.g. "铁锭") as the primary label; tooltip carries the
+            // full registry id for debugging / disambiguation.
+            nameEl.textContent = info.name || info.id;
             nameEl.title = info.id;
             card.appendChild(img);
             card.appendChild(nameEl);

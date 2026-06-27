@@ -1061,7 +1061,7 @@ html, body {
 
 /* ---------- Item picker modal (modal-over-modal) ---------- */
 
-.item-picker-overlay { z-index: 30; }
+.item-picker-overlay { z-index: 60; }   /* above .modal-overlay (50) — modal-over-modal */
 .item-picker-modal {
     width: min(680px, 92vw);
     max-height: 80vh;
