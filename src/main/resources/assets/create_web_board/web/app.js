@@ -108,16 +108,24 @@
             if (!r.ok) return;
             const list = await r.json();
             const next = new Map();
+            let staleChanged = false;
             list.forEach((b) => {
-                b._seenAt = Date.now();
+                // Preserve _seenAt from existing state — do NOT reset to Date.now() here.
+                // fetchAll is a safety-net poll; resetting _seenAt would prevent the
+                // client-side stale timer from ever firing (bug: destroyed DL never went offline).
+                // Only WS update/snapshot events set _seenAt (those are real data pushes).
+                const prev = state.boards.get(b.name);
+                b._seenAt = prev ? prev._seenAt : Date.now();
+                // Detect stale-status transitions to trigger a re-render.
+                const prevStale = prev ? !!prev.stale : false;
+                if (!!b.stale !== prevStale) staleChanged = true;
                 next.set(b.name, b);
             });
-            // Only re-render if something actually changed (cheap shallow compare).
-            if (!sameKeys(state.boards, next)) {
+            // Re-render if keys changed OR any board's stale status flipped.
+            if (!sameKeys(state.boards, next) || staleChanged) {
                 state.boards = next;
                 render();
             } else {
-                // refresh content in-place (timestamps may have advanced)
                 state.boards = next;
             }
         } catch (_) { /* offline; WS will heal */ }
@@ -174,7 +182,10 @@
         card.className = "card";
         card.dataset.name = b.name;
 
-        const stale = !b._seenAt || Date.now() - b._seenAt > 30000;
+        // Stale detection: prefer server's stale field (computed from lastUpdatedMs on the
+        // backend). Fall back to client-side _seenAt check for WS-only updates where the
+        // server stale field might lag by a poll cycle.
+        const stale = b.stale || (!b._seenAt || Date.now() - b._seenAt > 30000);
         if (stale) card.classList.add("card-offline");
 
         // Header: title + live badge
@@ -311,12 +322,13 @@
                 const elapsed = Date.now() - b._seenAt;
                 el.textContent = "上次更新: " + formatRelative(elapsed);
             });
-            // Check if any non-stale cards have crossed the 30s threshold
+            // Check if any non-stale cards have crossed the 30s threshold (client-side fallback)
+            // OR if server stale flag changed since last render
             document.querySelectorAll(".card:not(.card-offline)").forEach((cardEl) => {
                 const name = cardEl.dataset.name;
                 const b = state.boards.get(name);
-                if (!b || !b._seenAt) return;
-                if (Date.now() - b._seenAt > 30000) {
+                if (!b) return;
+                if (b.stale || (b._seenAt && Date.now() - b._seenAt > 30000)) {
                     needRender = true;
                 }
             });

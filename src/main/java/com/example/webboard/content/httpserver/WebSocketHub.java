@@ -12,6 +12,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -43,10 +44,34 @@ public class WebSocketHub {
         return t;
     });
 
+    /**
+     * Tracks board names that have already been flagged stale and notified to clients.
+     * When a board transitions from active→stale, we send a WS update with stale=true.
+     * When a board gets a real update (Put event), we clear it from this set so the
+     * next stale transition fires again.
+     */
+    private final Set<String> notifiedStale = ConcurrentHashMap.newKeySet();
+
+    /** Scheduled task that scans for newly-stale boards every 5 seconds. */
+    private ScheduledExecutorService staleScanner;
+
     public WebSocketHub(BoardRegistry registry) {
         this.registry = registry;
         // Subscribe to all registry changes for the lifetime of the hub.
         registry.addListener(this::onChange);
+
+        // Start the stale checker: scans every 5 seconds for boards whose
+        // lastUpdatedMs is older than BoardContent.STALE_THRESHOLD_MS. When a board
+        // transitions to stale, pushes a WS update (with stale=true in the JSON) so
+        // connected dashboards can immediately show the offline state + remove button.
+        // Without this, a destroyed Display Link (which stops sending transferData)
+        // would leave a frozen card on the dashboard with no way to detect it went away.
+        staleScanner = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "web-board-stale-scanner");
+            t.setDaemon(true);
+            return t;
+        });
+        staleScanner.scheduleWithFixedDelay(this::scanForStale, 5, 5, TimeUnit.SECONDS);
     }
 
     public Set<WsContext> sessions() {
@@ -91,11 +116,14 @@ public class WebSocketHub {
         // event comes from a different source (e.g. a WebSocket client action).
         switch (ev) {
             case ChangeEvent.Put put -> {
+                // Board got a real update — clear stale flag so the next stale transition fires.
+                notifiedStale.remove(put.content().name());
                 if (BoardDatabase.get().isInitialized()) {
                     BoardDatabase.get().upsert(put.content());
                 }
             }
             case ChangeEvent.Remove rm -> {
+                notifiedStale.remove(rm.name());
                 if (BoardDatabase.get().isInitialized()) {
                     BoardDatabase.get().markRemoved(rm.name());
                 }
@@ -125,11 +153,40 @@ public class WebSocketHub {
     }
 
     /**
-     * Drains pending sends and stops the worker thread. Called from {@code HttpServer.stop()}
+     * Scans all boards for newly-stale ones. For each board that is stale but hasn't been
+     * notified yet, sends a WS update message (which includes stale=true in the JSON via
+     * {@link JsonUtil#boardToJson}). This is what makes a destroyed Display Link's card
+     * switch to offline state on the dashboard within ~5 seconds of the last update.
+     */
+    private void scanForStale() {
+        for (var board : registry.all()) {
+            if (board.stale() && !notifiedStale.contains(board.name())) {
+                notifiedStale.add(board.name());
+                try {
+                    sendExecutor.submit(() -> {
+                        String json = "{\"type\":\"update\",\"board\":" + JsonUtil.boardToJson(board) + "}";
+                        for (WsContext s : sessions) {
+                            try { s.send(json); } catch (Exception e) {
+                                LOGGER.debug("[web_board] stale-notify ws send failed: {}", e.toString());
+                            }
+                        }
+                    });
+                } catch (Exception e) {
+                    LOGGER.debug("[web_board] stale-notify task rejected: {}", e.toString());
+                }
+            }
+        }
+    }
+
+    /**
+     * Drains pending sends and stops the worker threads. Called from {@code HttpServer.stop()}
      * during {@code ServerStoppingEvent}. A short grace window avoids dropping the last remove
      * events (e.g. boards cleared on server stop) that the dashboard may want to apply.
      */
     public void shutdown() {
+        if (staleScanner != null) {
+            staleScanner.shutdownNow();
+        }
         sendExecutor.shutdown();
         try {
             if (!sendExecutor.awaitTermination(2, TimeUnit.SECONDS)) {
