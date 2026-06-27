@@ -60,6 +60,22 @@ public final class BoardRegistry {
     }
 
     /**
+     * Set/override the display name of a board. The stable {@code name} key is unchanged
+     * (so the dashboard card keeps its identity); only the user-facing label changes.
+     * Fires a {@link ChangeEvent.Put} so WS clients re-render with the new label.
+     * No-op (returns) if the board isn't tracked.
+     */
+    public void rename(String name, String newDisplayName) {
+        BoardContent existing = boards.get(name);
+        if (existing == null) return;
+        BoardContent renamed = new BoardContent(
+                existing.name(), newDisplayName, existing.sourceType(),
+                existing.lines(), existing.lastUpdatedMs());
+        boards.put(name, renamed);
+        listeners.forEach(l -> l.accept(new ChangeEvent.Put(renamed)));
+    }
+
+    /**
      * Remove all boards. Fires a {@link ChangeEvent.Remove} for every entry. Used at
      * server-stop so a fresh server start doesn't display stale board names from the
      * previous session.

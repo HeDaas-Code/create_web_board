@@ -80,8 +80,20 @@ public final class BoardDatabase {
 
     private BoardDatabase() {}
 
+    /** One point-in-time snapshot of a board's lines, for the history view in the dashboard modal. */
+    public record HistoryEntry(long ts, List<String> lines) {}
+
     /** In-memory representation of a persisted board. */
-    private record BoardEntry(String sourceType, List<String> lines, long lastUpdatedMs, String status) {}
+    private record BoardEntry(
+            String sourceType,
+            String displayName,
+            List<String> lines,
+            long lastUpdatedMs,
+            String status,
+            List<HistoryEntry> history) {}
+
+    /** Cap on history entries per board to keep the JSON file bounded. Oldest dropped first. */
+    private static final int HISTORY_CAP = 200;
 
     /**
      * Initialize the database -- loads the JSON file (if it exists) and starts the flush
@@ -118,15 +130,65 @@ public final class BoardDatabase {
     /**
      * Insert or update a board. The write is buffered in memory; the flush scheduler persists
      * it to disk at most once every 5 seconds. Safe to call from any thread.
+     *
+     * <p>On update, the existing entry's {@code displayName} is preserved unless the incoming
+     * content carries a non-null one (rename path). A new {@link HistoryEntry} is appended when
+     * the lines differ from the most recent history snapshot (so stable content doesn't bloat
+     * the history), capped at {@link #HISTORY_CAP}.
      */
     public void upsert(BoardContent content) {
         if (!initialized) return;
+        BoardEntry prev = entries.get(content.name());
+        // Preserve a previously-set display name when the refresh doesn't carry one (the common
+        // refresh path from WebMirror passes the preserved name through, but be defensive).
+        String displayName = content.displayName() != null ? content.displayName()
+                : (prev != null ? prev.displayName() : null);
+
+        List<HistoryEntry> history = prev != null ? new ArrayList<>(prev.history()) : new ArrayList<>();
+        List<String> newLines = new ArrayList<>(content.lines());
+        boolean linesChanged = history.isEmpty() || !history.get(history.size() - 1).lines().equals(newLines);
+        if (linesChanged) {
+            history.add(new HistoryEntry(content.lastUpdatedMs(), newLines));
+            while (history.size() > HISTORY_CAP) history.remove(0);
+        }
+
         entries.put(content.name(), new BoardEntry(
                 content.sourceType(),
-                new ArrayList<>(content.lines()),
+                displayName,
+                newLines,
                 content.lastUpdatedMs(),
-                "active"));
+                "active",
+                history));
         dirty = true;
+    }
+
+    /**
+     * Set or clear the display name of a board. No-op if the board isn't persisted.
+     * Pass {@code null} to reset to the position-based key.
+     */
+    public void setDisplayName(String name, String newDisplayName) {
+        if (!initialized) return;
+        BoardEntry existing = entries.get(name);
+        if (existing == null) return;
+        entries.put(name, new BoardEntry(
+                existing.sourceType(),
+                newDisplayName,
+                existing.lines(),
+                existing.lastUpdatedMs(),
+                existing.status(),
+                existing.history()));
+        dirty = true;
+    }
+
+    /**
+     * Load the history snapshots for a board (newest-last). Returns an empty list if the board
+     * isn't known or has no history. Used by the dashboard modal's "历史信息" view.
+     */
+    public List<HistoryEntry> loadHistory(String name) {
+        if (!initialized) return List.of();
+        BoardEntry existing = entries.get(name);
+        if (existing == null) return List.of();
+        return new ArrayList<>(existing.history());
     }
 
     /**
@@ -139,9 +201,11 @@ public final class BoardDatabase {
         if (existing != null) {
             entries.put(name, new BoardEntry(
                     existing.sourceType(),
+                    existing.displayName(),
                     existing.lines(),
                     existing.lastUpdatedMs(),
-                    "removed"));
+                    "removed",
+                    existing.history()));
             dirty = true;
         }
     }
@@ -158,7 +222,7 @@ public final class BoardDatabase {
         for (var e : entries.entrySet()) {
             BoardEntry be = e.getValue();
             if ("active".equals(be.status())) {
-                result.add(new BoardContent(e.getKey(), be.sourceType(),
+                result.add(new BoardContent(e.getKey(), be.displayName(), be.sourceType(),
                         new ArrayList<>(be.lines()), be.lastUpdatedMs()));
             }
         }
@@ -224,6 +288,10 @@ public final class BoardDatabase {
             BoardEntry be = e.getValue();
             sb.append(JsonEscape.quote(e.getKey())).append(":{");
             sb.append("\"sourceType\":").append(JsonEscape.quote(be.sourceType())).append(',');
+            // displayName omitted when null to keep the file lean; the parser treats missing as null.
+            if (be.displayName() != null) {
+                sb.append("\"displayName\":").append(JsonEscape.quote(be.displayName())).append(',');
+            }
             sb.append("\"lines\":[");
             boolean firstLine = true;
             for (String line : be.lines()) {
@@ -233,8 +301,22 @@ public final class BoardDatabase {
             }
             sb.append("],");
             sb.append("\"lastUpdatedMs\":").append(be.lastUpdatedMs()).append(',');
-            sb.append("\"status\":").append(JsonEscape.quote(be.status()));
-            sb.append('}');
+            sb.append("\"status\":").append(JsonEscape.quote(be.status())).append(',');
+            sb.append("\"history\":[");
+            boolean firstHist = true;
+            for (HistoryEntry he : be.history()) {
+                if (!firstHist) sb.append(',');
+                firstHist = false;
+                sb.append("{\"ts\":").append(he.ts()).append(",\"lines\":[");
+                boolean firstHl = true;
+                for (String line : he.lines()) {
+                    if (!firstHl) sb.append(',');
+                    firstHl = false;
+                    sb.append(JsonEscape.quote(line));
+                }
+                sb.append("]}");
+            }
+            sb.append("]}");
         }
         sb.append("}}");
         return sb.toString();
@@ -326,15 +408,18 @@ public final class BoardDatabase {
                 p.expect('{');
                 p.skipWs();
                 String sourceType = "unknown";
+                String displayName = null;
                 List<String> lines = new ArrayList<>();
                 long lastUpdatedMs = 0;
                 String status = "active";
+                List<HistoryEntry> history = new ArrayList<>();
                 if (p.peek() != '}') {
                     while (true) {
                         String field = p.parseString();
                         p.skipWs(); p.expect(':'); p.skipWs();
                         switch (field) {
                             case "sourceType" -> sourceType = p.parseString();
+                            case "displayName" -> displayName = p.parseString();
                             case "lines" -> {
                                 p.expect('[');
                                 p.skipWs();
@@ -350,6 +435,50 @@ public final class BoardDatabase {
                             }
                             case "lastUpdatedMs" -> lastUpdatedMs = p.parseLong();
                             case "status" -> status = p.parseString();
+                            case "history" -> {
+                                p.expect('[');
+                                p.skipWs();
+                                if (p.peek() != ']') {
+                                    while (true) {
+                                        p.expect('{');
+                                        p.skipWs();
+                                        long hts = 0;
+                                        List<String> hlines = new ArrayList<>();
+                                        if (p.peek() != '}') {
+                                            while (true) {
+                                                String hfield = p.parseString();
+                                                p.skipWs(); p.expect(':'); p.skipWs();
+                                                switch (hfield) {
+                                                    case "ts" -> hts = p.parseLong();
+                                                    case "lines" -> {
+                                                        p.expect('[');
+                                                        p.skipWs();
+                                                        if (p.peek() != ']') {
+                                                            while (true) {
+                                                                hlines.add(p.parseString());
+                                                                p.skipWs();
+                                                                if (p.peek() == ',') { p.i++; p.skipWs(); continue; }
+                                                                break;
+                                                            }
+                                                        }
+                                                        p.expect(']');
+                                                    }
+                                                    default -> p.skipValue();
+                                                }
+                                                p.skipWs();
+                                                if (p.peek() == ',') { p.i++; p.skipWs(); continue; }
+                                                break;
+                                            }
+                                        }
+                                        p.expect('}');
+                                        history.add(new HistoryEntry(hts, hlines));
+                                        p.skipWs();
+                                        if (p.peek() == ',') { p.i++; p.skipWs(); continue; }
+                                        break;
+                                    }
+                                }
+                                p.expect(']');
+                            }
                             default -> p.skipValue();
                         }
                         p.skipWs();
@@ -358,7 +487,7 @@ public final class BoardDatabase {
                     }
                 }
                 p.expect('}');
-                result.put(name, new BoardEntry(sourceType, lines, lastUpdatedMs, status));
+                result.put(name, new BoardEntry(sourceType, displayName, lines, lastUpdatedMs, status, history));
                 p.skipWs();
                 if (p.peek() == ',') { p.i++; p.skipWs(); continue; }
                 break;

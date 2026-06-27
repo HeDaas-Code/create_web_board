@@ -49,8 +49,22 @@ public final class WebMirror {
     /** NBT key inside the Display Link's source-config tag. */
     public static final String NBT_KEY = "WebSynced";
 
-    /** Last-sent content per board, used to suppress no-op refreshes. Keyed by board name. */
-    private record Cached(String sourceType, List<String> lines) {}
+    /**
+     * Last-sent content per board, used to suppress no-op refreshes. Keyed by board name.
+     * Tracks {@code lastBroadcastMs} so we can send a heartbeat refresh even when the content
+     * is unchanged (otherwise stable-content boards would go stale after 30s — see below).
+     */
+    private record Cached(String sourceType, List<String> lines, long lastBroadcastMs) {}
+
+    /**
+     * Maximum gap between two broadcasts of unchanged content. Boards whose content is stable
+     * (the common case — item counts, static labels) still get a fresh {@code lastUpdatedMs}
+     * at least this often, so {@link BoardContent#stale()} stays false as long as the Display
+     * Link is alive and calling {@code transferData}. Without this heartbeat, the v0.2.3 dedup
+     * caused every stable-content board to flip to "offline" 30s after its last content change
+     * (user report: "一直是离线状态了").
+     */
+    private static final long HEARTBEAT_INTERVAL_MS = 10_000;
 
     private static final ConcurrentHashMap<String, Cached> LAST_SENT = new ConcurrentHashMap<>();
 
@@ -82,18 +96,29 @@ public final class WebMirror {
         ResourceLocation id = CreateBuiltInRegistries.DISPLAY_SOURCE.getKey(source);
         String sourceType = id != null ? id.toString() : "unknown";
 
-        // Dedup: if nothing visible changed since the last refresh, skip the registry put and
-        // the downstream WS broadcast entirely. lastUpdatedMs is intentionally NOT compared —
-        // a no-op refresh shouldn't churn the dashboard's "updated" timestamp either.
+        // Preserve a user-set display name across content refreshes (rename is set via the
+        // dashboard modal; without this the next refresh would drop it back to the position key).
+        BoardContent existing = BoardRegistry.get().get(name);
+        String displayName = existing != null ? existing.displayName() : null;
+
+        long now = System.currentTimeMillis();
         Cached prev = LAST_SENT.get(name);
-        if (prev != null
-                && prev.sourceType().equals(sourceType)
-                && prev.lines().equals(lines)) {
+        boolean contentChanged = prev == null
+                || !prev.sourceType().equals(sourceType)
+                || !prev.lines().equals(lines);
+        boolean heartbeatDue = prev == null || (now - prev.lastBroadcastMs() > HEARTBEAT_INTERVAL_MS);
+
+        // Dedup: skip the registry put + WS broadcast when the content is unchanged AND a
+        // heartbeat was sent recently. The last broadcast's lastUpdatedMs keeps stale() false
+        // for 30s, and we re-broadcast every HEARTBEAT_INTERVAL_MS (10s), so an alive DL never
+        // trips the stale threshold. When the DL is destroyed it stops calling mirror(), the
+        // heartbeat stops, and after 30s the staleScanner correctly flags it offline.
+        if (!contentChanged && !heartbeatDue) {
             return;
         }
-        LAST_SENT.put(name, new Cached(sourceType, lines));
+        LAST_SENT.put(name, new Cached(sourceType, lines, now));
 
-        BoardContent content = BoardContent.of(name, sourceType, lines);
+        BoardContent content = new BoardContent(name, displayName, sourceType, lines, now);
         BoardRegistry.get().put(content);
         if (BoardDatabase.get().isInitialized()) {
             BoardDatabase.get().upsert(content);

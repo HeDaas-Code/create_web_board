@@ -37,9 +37,60 @@ public final class JsonUtil {
         return sb.toString();
     }
 
+    /**
+     * Extract a string field's value from a small JSON object (e.g. a request body like
+     * {@code {"displayName":"Factory"}}). Returns {@code null} if the field is absent or not a
+     * string. Handles standard escape sequences. This is a controlled-input parser (the dashboard
+     * modal), not a general JSON parser — fine for our tiny API payloads.
+     */
+    public static String extractStringField(String json, String field) {
+        if (json == null) return null;
+        String needle = "\"" + field + "\"";
+        int i = json.indexOf(needle);
+        if (i < 0) return null;
+        i += needle.length();
+        while (i < json.length()) {
+            char c = json.charAt(i);
+            if (c == ':') { i++; break; }
+            if (Character.isWhitespace(c)) { i++; continue; }
+            return null; // unexpected char before colon
+        }
+        while (i < json.length() && Character.isWhitespace(json.charAt(i))) i++;
+        if (i >= json.length() || json.charAt(i) != '"') return null;
+        i++; // opening quote
+        StringBuilder sb = new StringBuilder();
+        while (i < json.length()) {
+            char c = json.charAt(i++);
+            if (c == '"') return sb.toString();
+            if (c == '\\' && i < json.length()) {
+                char esc = json.charAt(i++);
+                switch (esc) {
+                    case '"'  -> sb.append('"');
+                    case '\\' -> sb.append('\\');
+                    case '/'  -> sb.append('/');
+                    case 'n'  -> sb.append('\n');
+                    case 'r'  -> sb.append('\r');
+                    case 't'  -> sb.append('\t');
+                    case 'u' -> {
+                        if (i + 4 <= json.length()) {
+                            sb.append((char) Integer.parseInt(json.substring(i, i + 4), 16));
+                            i += 4;
+                        }
+                    }
+                    default -> sb.append(esc);
+                }
+            } else {
+                sb.append(c);
+            }
+        }
+        return null; // unterminated string
+    }
+
     /** Serialize a {@code BoardContent} to its JSON object form (no enclosing braces wrapping). */
     public static String boardToJson(com.example.webboard.content.registry.BoardContent b) {
         StringBuilder sb = new StringBuilder("{\"name\":").append(quote(b.name()))
+                .append(",\"displayName\":").append(quote(b.displayName()))
+                .append(",\"effectiveName\":").append(quote(b.effectiveName()))
                 .append(",\"sourceType\":").append(quote(b.sourceType()))
                 .append(",\"sourceLabel\":").append(quote(com.example.webboard.content.mirror.SourceLabels.label(b.sourceType())))
                 .append(",\"lines\":[");

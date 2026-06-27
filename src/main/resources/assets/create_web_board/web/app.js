@@ -30,6 +30,18 @@
         search: $("search"),
         boardGrid: $("board-grid"),
         emptyState: $("empty-state"),
+        // Modal
+        modal: $("modal"),
+        modalTitle: $("modal-title-h"),
+        modalClose: $("modal-close"),
+        nameInput: $("modal-name-input"),
+        saveName: $("modal-save-name"),
+        keyHint: $("modal-key-hint"),
+        currentLines: $("modal-current-lines"),
+        historyBox: $("modal-history"),
+        historyCount: $("modal-history-count"),
+        footMeta: $("modal-foot-meta"),
+        deleteBtn: $("modal-delete"),
     };
 
     const state = {
@@ -38,6 +50,7 @@
         backoff: 500,         // ms, doubles on failure, cap 10s
         filter: "",           // current filter query (lower-case)
         lastSeenInterval: null,
+        modalName: null,      // stable key of the board currently shown in the modal (null = closed)
     };
 
     // ---------- WebSocket ----------
@@ -85,18 +98,37 @@
                     state.boards.set(b.name, b);
                 });
                 render();
+                refreshModalIfOpen();
                 break;
             case "update":
                 msg.board._seenAt = Date.now();
                 state.boards.set(msg.board.name, msg.board);
                 render();
+                refreshModalIfOpen();
                 break;
             case "remove":
                 state.boards.delete(msg.name);
+                if (state.modalName === msg.name) closeModal();
                 render();
                 break;
             default:
                 // unknown — ignore
+        }
+    }
+
+    /** If the modal is open and its board just got an update, re-render its live fields. */
+    function refreshModalIfOpen() {
+        if (!state.modalName) return;
+        const b = state.boards.get(state.modalName);
+        if (b) {
+            // Preserve any text the user is currently typing in the name field.
+            const focused = document.activeElement === els.nameInput;
+            const draft = els.nameInput.value;
+            renderModal(b);
+            if (focused) {
+                els.nameInput.focus();
+                els.nameInput.value = draft;
+            }
         }
     }
 
@@ -128,6 +160,8 @@
             } else {
                 state.boards = next;
             }
+            // Keep an open modal in sync even when WS is down (REST is the only source then).
+            refreshModalIfOpen();
         } catch (_) { /* offline; WS will heal */ }
     }
 
@@ -150,6 +184,7 @@
     function matchesFilter(b) {
         if (!state.filter) return true;
         if (b.name && b.name.toLowerCase().includes(state.filter)) return true;
+        if (b.effectiveName && b.effectiveName.toLowerCase().includes(state.filter)) return true;
         if (b.sourceType && b.sourceType.toLowerCase().includes(state.filter)) return true;
         return false;
     }
@@ -181,6 +216,9 @@
         const card = document.createElement("article");
         card.className = "card";
         card.dataset.name = b.name;
+        card.tabIndex = 0;
+        card.setAttribute("role", "button");
+        card.setAttribute("aria-label", "打开看板详情: " + displayTitle(b));
 
         // Stale detection: prefer server's stale field (computed from lastUpdatedMs on the
         // backend). Fall back to client-side _seenAt check for WS-only updates where the
@@ -188,14 +226,22 @@
         const stale = b.stale || (!b._seenAt || Date.now() - b._seenAt > 30000);
         if (stale) card.classList.add("card-offline");
 
+        // Open the detail modal on click. Management (rename/history/delete) lives there so it's
+        // always reachable regardless of stale state — fixes "没有删除按钮" (the old inline button
+        // only rendered when stale).
+        card.addEventListener("click", () => openModal(b.name));
+        card.addEventListener("keydown", (ev) => {
+            if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openModal(b.name); }
+        });
+
         // Header: title + live badge
         const head = document.createElement("header");
         head.className = "card-head";
 
         const title = document.createElement("h3");
         title.className = "card-title";
-        title.textContent = b.name;
-        title.title = b.name;
+        title.textContent = displayTitle(b);
+        title.title = displayTitle(b);
 
         const live = document.createElement("span");
         live.className = "card-live";
@@ -251,27 +297,167 @@
         const count = (b.lines || []).length;
         foot.textContent = count + (count === 1 ? " 行" : " 行");
 
-        if (stale) {
-            const removeBtn = document.createElement("button");
-            removeBtn.className = "remove-btn";
-            removeBtn.textContent = "移除";
-            removeBtn.addEventListener("click", async () => {
-                try {
-                    const r = await fetch("/api/boards/" + encodeURIComponent(b.name), { method: "DELETE" });
-                    if (r.ok) {
-                        state.boards.delete(b.name);
-                        render();
-                    }
-                } catch (_) { /* ignore */ }
-            });
-            foot.appendChild(removeBtn);
-        }
-
         card.appendChild(head);
         card.appendChild(meta);
         card.appendChild(lines);
         card.appendChild(foot);
         return card;
+    }
+
+    // ---------- Modal ----------
+
+    /** The name to display for a board: user-set displayName if present, else the stable key. */
+    function displayTitle(b) {
+        return (b && b.effectiveName) ? b.effectiveName : (b ? b.name : "");
+    }
+
+    function openModal(name) {
+        const b = state.boards.get(name);
+        if (!b) return;
+        state.modalName = name;
+        renderModal(b);
+        els.modal.hidden = false;
+        // Focus the name input so the user can rename immediately.
+        setTimeout(() => els.nameInput.focus(), 0);
+        loadHistory(name);
+    }
+
+    function closeModal() {
+        state.modalName = null;
+        els.modal.hidden = true;
+    }
+
+    /** Re-render the modal's static fields from a board snapshot. Called on open + WS updates. */
+    function renderModal(b) {
+        els.modalTitle.textContent = displayTitle(b);
+        els.nameInput.value = b.displayName || "";
+        els.keyHint.textContent = "位置标识: " + b.name + "  ·  " + (b.sourceType || "unknown");
+        els.footMeta.textContent = (b.stale ? "离线" : "在线") + "  ·  更新于 " + formatTime(b.lastUpdatedMs);
+
+        // Current lines
+        els.currentLines.innerHTML = "";
+        (b.lines || []).forEach((line) => {
+            const li = document.createElement("li");
+            li.textContent = line;
+            els.currentLines.appendChild(li);
+        });
+
+        // Disable delete while a live DL is actively refreshing? No — allow always; if the DL is
+        // still active the board just reappears on the next refresh. We note that in the tooltip.
+        els.deleteBtn.title = b.stale
+            ? "从看板移除（看板已离线，删除后不会自动恢复）"
+            : "从看板移除（看板仍在线，DL 下次刷新会重建；如需永久移除请在游戏内关闭 Web 开关）";
+    }
+
+    async function loadHistory(name) {
+        els.historyBox.innerHTML = '<div class="hist-empty">加载中…</div>';
+        els.historyCount.textContent = "";
+        try {
+            const r = await fetch("/api/boards/" + encodeURIComponent(name) + "/history");
+            if (!r.ok) {
+                els.historyBox.innerHTML = '<div class="hist-empty">（暂无历史）</div>';
+                return;
+            }
+            const list = await r.json();
+            renderHistory(list);
+        } catch (_) {
+            els.historyBox.innerHTML = '<div class="hist-empty">加载失败</div>';
+        }
+    }
+
+    function renderHistory(list) {
+        els.historyBox.innerHTML = "";
+        if (!list || list.length === 0) {
+            els.historyBox.innerHTML = '<div class="hist-empty">（暂无历史快照）</div>';
+            els.historyCount.textContent = "";
+            return;
+        }
+        els.historyCount.textContent = "共 " + list.length + " 条";
+        // Newest first is more useful for scanning recent changes.
+        const frag = document.createDocumentFragment();
+        for (let i = list.length - 1; i >= 0; i--) {
+            const he = list[i];
+            const item = document.createElement("div");
+            item.className = "hist-item";
+
+            const head = document.createElement("div");
+            head.className = "hist-item-head";
+            const idx = document.createElement("span");
+            idx.className = "hist-idx";
+            idx.textContent = "#" + (i + 1);
+            const ts = document.createElement("span");
+            ts.textContent = formatTime(he.ts) + "  ·  " + formatRelative(Date.now() - he.ts);
+            head.appendChild(idx);
+            head.appendChild(ts);
+
+            const ol = document.createElement("ol");
+            ol.className = "hist-lines";
+            (he.lines || []).forEach((line) => {
+                const li = document.createElement("li");
+                li.textContent = line;
+                ol.appendChild(li);
+            });
+            if ((he.lines || []).length === 0) {
+                const li = document.createElement("li");
+                li.textContent = "（空）";
+                li.style.color = "var(--text-3)";
+                ol.appendChild(li);
+            }
+
+            item.appendChild(head);
+            item.appendChild(ol);
+            frag.appendChild(item);
+        }
+        els.historyBox.appendChild(frag);
+    }
+
+    async function saveDisplayName() {
+        const name = state.modalName;
+        if (!name) return;
+        const value = els.nameInput.value.trim();
+        els.saveName.disabled = true;
+        try {
+            const body = JSON.stringify({ displayName: value });
+            const r = await fetch("/api/boards/" + encodeURIComponent(name), {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: body,
+            });
+            if (r.ok) {
+                // The WS update (fired by the server's rename) will refresh the card + modal.
+                // Also update local state immediately for snappy feedback.
+                const b = state.boards.get(name);
+                if (b) {
+                    b.displayName = value || null;
+                    b.effectiveName = value || b.name;
+                    render();
+                    renderModal(b);
+                }
+            }
+        } catch (_) { /* ignore */ } finally {
+            els.saveName.disabled = false;
+        }
+    }
+
+    async function deleteBoard() {
+        const name = state.modalName;
+        if (!name) return;
+        const b = state.boards.get(name);
+        const msg = b && b.stale
+            ? "确认从看板移除「" + displayTitle(b) + "」？该看板已离线。"
+            : "确认从看板移除「" + displayTitle(b) + "」？\n注意：看板仍在线，Display Link 下次刷新会重建它。如需永久移除，请在游戏内关闭该 DL 的 Web 开关。";
+        if (!window.confirm(msg)) return;
+        els.deleteBtn.disabled = true;
+        try {
+            const r = await fetch("/api/boards/" + encodeURIComponent(name), { method: "DELETE" });
+            if (r.ok) {
+                state.boards.delete(name);
+                closeModal();
+                render();
+            }
+        } catch (_) { /* ignore */ } finally {
+            els.deleteBtn.disabled = false;
+        }
     }
 
     // ---------- Helpers ----------
@@ -341,6 +527,21 @@
     els.search.addEventListener("input", (ev) => {
         state.filter = ev.target.value.trim().toLowerCase();
         render();
+    });
+
+    // Modal wiring: close button, overlay backdrop click, Esc, save, delete, Enter-to-save.
+    els.modalClose.addEventListener("click", closeModal);
+    els.modal.addEventListener("click", (ev) => {
+        // Only close when the overlay itself (not the dialog) is clicked.
+        if (ev.target === els.modal) closeModal();
+    });
+    document.addEventListener("keydown", (ev) => {
+        if (ev.key === "Escape" && !els.modal.hidden) closeModal();
+    });
+    els.saveName.addEventListener("click", saveDisplayName);
+    els.deleteBtn.addEventListener("click", deleteBoard);
+    els.nameInput.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") { ev.preventDefault(); saveDisplayName(); }
     });
 
     tickClock();
