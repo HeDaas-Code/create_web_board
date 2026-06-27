@@ -147,9 +147,12 @@ public final class ApiRoutes {
                 return;
             }
             ctx.contentType("image/png");
-            // Cache-control: item textures are immutable for a game session, so let the browser
-            // cache aggressively to avoid re-fetching on every card render.
-            ctx.header("Cache-Control", "public, max-age=3600");
+            // Short cache: icons CAN change within a session (client uploads a fresh render),
+            // so don't let the browser pin a stale/blank PNG for an hour. 60s is long enough
+            // to avoid re-fetching on every card render, short enough to self-heal after an
+            // upload. The browser also gets an ETag-free path — the id is stable, the bytes
+            // may not be.
+            ctx.header("Cache-Control", "public, max-age=60");
             ctx.result(png);
         });
 

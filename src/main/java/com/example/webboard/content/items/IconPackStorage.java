@@ -61,6 +61,14 @@ public final class IconPackStorage {
     private static final String DIR_PATH = "config/webboard-icons";
     private static final String ZIP_PATH = "config/webboard-icons.zip";
     private static final String NAMES_FILE = "names.json";
+    private static final String VERSION_FILE = ".cache-version";
+    /**
+     * Bump when the rendered-icon format changes in a way that invalidates old caches
+     * (e.g. the v0.6.0 → v0.6.1 FBO-projection fix made all previously-cached PNGs blank,
+     * so they must be discarded on upgrade). On mismatch the unpacked dir is wiped before
+     * loading — the next client connection re-uploads fresh renders.
+     */
+    private static final String CACHE_VERSION = "2";
     private static final long FLUSH_INTERVAL_MS = 3_000;
 
     /** In-memory cache: id -> PNG bytes. */
@@ -80,6 +88,17 @@ public final class IconPackStorage {
         try {
             Path dir = Path.of(DIR_PATH);
             Files.createDirectories(dir);
+            // Cache-version check: if the on-disk version marker doesn't match the current
+            // CACHE_VERSION, wipe the unpacked dir. This is what cleans out the blank PNGs
+            // produced by the v0.6.0 renderer bug when the operator upgrades to v0.6.2+.
+            // (The operator-uploaded zip is NOT wiped — that's a deliberate, hand-curated pack.)
+            if (!checkCacheVersion(dir)) {
+                LOGGER.info("[web_board] icon cache version mismatch (expected {}) — wiping {} to discard stale renders",
+                        CACHE_VERSION, DIR_PATH);
+                wipeDir(dir);
+                Files.createDirectories(dir);
+                writeCacheVersion(dir);
+            }
             Path zip = Path.of(ZIP_PATH);
             if (Files.exists(zip)) {
                 loadFromZip(zip);
@@ -101,6 +120,30 @@ public final class IconPackStorage {
             initialized = true;
         } catch (Exception e) {
             LOGGER.error("[web_board] failed to init icon pack: {}", e.toString(), e);
+        }
+    }
+
+    /** True if the on-disk version marker matches {@link #CACHE_VERSION}. */
+    private static boolean checkCacheVersion(Path dir) throws IOException {
+        Path v = dir.resolve(VERSION_FILE);
+        if (!Files.exists(v)) return false;
+        String s = Files.readString(v, StandardCharsets.UTF_8).trim();
+        return CACHE_VERSION.equals(s);
+    }
+
+    private static void writeCacheVersion(Path dir) throws IOException {
+        Files.writeString(dir.resolve(VERSION_FILE), CACHE_VERSION, StandardCharsets.UTF_8);
+    }
+
+    /** Delete every file inside {@code dir} (not the dir itself). Used on cache-version mismatch. */
+    private static void wipeDir(Path dir) throws IOException {
+        try (var stream = Files.list(dir)) {
+            var it = stream.iterator();
+            while (it.hasNext()) {
+                Path p = it.next();
+                try { Files.deleteIfExists(p); }
+                catch (IOException e) { LOGGER.warn("[web_board] failed to delete {}: {}", p, e.toString()); }
+            }
         }
     }
 
@@ -126,9 +169,22 @@ public final class IconPackStorage {
     /**
      * Store one icon + its localized name. Called by the bulk-upload endpoint. The write is
      * buffered in-memory immediately; disk flush is debounced. Replaces any existing entry.
+     *
+     * <p>Rejects obviously-broken uploads: PNGs below {@link #MIN_VALID_PNG_BYTES} are almost
+     * certainly blank (a 32×32 fully-transparent PNG compresses to ~80 bytes). This is the
+     * safety net that catches a regression in the renderer before blank icons leak into the
+     * dashboard cache again.
      */
     public void store(String itemId, String localizedName, byte[] pngBytes) {
         if (!initialized || itemId == null || pngBytes == null || pngBytes.length == 0) return;
+        if (pngBytes.length < MIN_VALID_PNG_BYTES) {
+            long n = rejectedCount.incrementAndGet();
+            if (n <= 5 || n % 1000 == 0) {
+                LOGGER.warn("[web_board] rejected blank/too-small icon for {} ({} bytes) — renderer produced empty PNG? (total rejected: {})",
+                        itemId, pngBytes.length, n);
+            }
+            return;
+        }
         icons.put(itemId, pngBytes);
         if (localizedName != null && !localizedName.isEmpty()) {
             names.put(itemId, localizedName);
@@ -137,12 +193,16 @@ public final class IconPackStorage {
         // Log every Nth store so the operator can see uploads landing without flooding the log.
         long n = storeCount.incrementAndGet();
         if (n == 1 || n == 100 || n == 1000 || n % 5000 == 0) {
-            LOGGER.info("[web_board] icon pack received icon #{}: {} (total cached: {})",
-                    n, itemId, icons.size());
+            LOGGER.info("[web_board] icon pack received icon #{}: {} ({} bytes, total cached: {})",
+                    n, itemId, pngBytes.length, icons.size());
         }
     }
 
+    /** Minimum acceptable PNG size. A 32×32 fully-transparent PNG is ~80 bytes; real icons are 1-10 KB. */
+    private static final int MIN_VALID_PNG_BYTES = 200;
+
     private final java.util.concurrent.atomic.AtomicLong storeCount = new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong rejectedCount = new java.util.concurrent.atomic.AtomicLong();
 
     /** Snapshot of all known (id, localized name) pairs. Used by item search to show 中文名. */
     public Map<String, String> allNames() {
@@ -220,7 +280,14 @@ public final class IconPackStorage {
                 String id = idFromFileName(fn.substring(0, fn.length() - 4));
                 if (id == null) return;
                 try {
-                    icons.put(id, Files.readAllBytes(p));
+                    byte[] bytes = Files.readAllBytes(p);
+                    // Skip blank PNGs left over from a buggy renderer version — the cache-version
+                    // wipe should have caught them, but this is defense-in-depth.
+                    if (bytes.length < MIN_VALID_PNG_BYTES) {
+                        LOGGER.warn("[web_board] skipping blank icon on disk: {} ({} bytes)", p, bytes.length);
+                        return;
+                    }
+                    icons.put(id, bytes);
                 } catch (IOException e) {
                     LOGGER.warn("[web_board] failed to read icon {}: {}", p, e.toString());
                 }
