@@ -3,7 +3,6 @@ package com.example.webboard.content.httpserver;
 import com.example.webboard.content.registry.BoardRegistry;
 
 import io.javalin.Javalin;
-import io.javalin.http.staticfiles.Location;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -44,23 +43,19 @@ public class HttpServer {
             return;
         }
         app = Javalin.create(cfg -> {
-            // Single static-files entry: the classpath dir /assets/create_web_board/web
-            // is served at "/", so:
-            //   GET /          → index.html (Javalin serves index.html at the hosted root)
-            //   GET /style.css → style.css
-            //   GET /app.js    → app.js
-            // The previous setup also mounted the same dir at "/static" — that was unused
-            // (index.html references /style.css and /app.js directly) and the duplicate
-            // mount was a suspected cause of inconsistent asset resolution. Dropping it.
-            cfg.staticFiles.add(staticDir -> {
-                staticDir.hostedPath = "/";
-                staticDir.directory = "/assets/create_web_board/web";
-                staticDir.location = Location.CLASSPATH;
-                staticDir.skipFileFunction = req -> false;  // serve index.html on "/"
-            });
             // Reasonable defaults for a localhost dashboard — never expose publicly.
             cfg.showJavalinBanner = false;
         });
+
+        // Static dashboard assets. We serve them via explicit routes instead of Javalin's
+        // staticFiles because staticFiles with hostedPath="/" does NOT auto-serve index.html
+        // at GET / in Javalin 6 — it looks for an empty filename under the directory and 404s,
+        // which left the dashboard as a blank page (user report: "白页面"). Explicit routes
+        // read the classpath resource stream directly and are fully predictable.
+        registerStaticAsset(app, "/", "/index.html", "text/html; charset=utf-8");
+        registerStaticAsset(app, "/index.html", "/index.html", "text/html; charset=utf-8");
+        registerStaticAsset(app, "/style.css", "/style.css", "text/css; charset=utf-8");
+        registerStaticAsset(app, "/app.js", "/app.js", "application/javascript; charset=utf-8");
 
         ApiRoutes.register(app, BoardRegistry.get(), hub);
 
@@ -103,5 +98,25 @@ public class HttpServer {
 
     public boolean isRunning() {
         return app != null;
+    }
+
+    /**
+     * Serves a single classpath resource under {@code /assets/create_web_board/web} at the
+     * given route with the given content type. Used for the dashboard's static assets
+     * (HTML/CSS/JS). Bytes are read eagerly so the InputStream can be closed before the
+     * response is written — keeps the lambda simple and avoids leaking classpath handles.
+     */
+    private static void registerStaticAsset(Javalin app, String route, String classpathPath, String contentType) {
+        String base = "/assets/create_web_board/web";
+        app.get(route, ctx -> {
+            try (var in = HttpServer.class.getResourceAsStream(base + classpathPath)) {
+                if (in == null) {
+                    ctx.status(404).result("asset not found: " + classpathPath);
+                    return;
+                }
+                ctx.contentType(contentType);
+                ctx.result(in.readAllBytes());
+            }
+        });
     }
 }
