@@ -4,28 +4,57 @@ import com.example.webboard.content.registry.BoardContent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.sql.Statement;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
- * BoardDatabase -- SQLite-backed persistence layer for {@link BoardContent} entries.
+ * BoardDatabase -- JSON-file-backed persistence layer for {@link BoardContent} entries.
  *
- * <p>Uses the SQLite JDBC driver bundled with NeoForge/Minecraft ({@code org.sqlite.JDBC}).
- * The database file lives at {@code config/webboard-boards.db} relative to the game run directory.
+ * <p><b>Why JSON instead of SQLite?</b> v0.3.0 used SQLite via {@code org.sqlite.JDBC}, but
+ * NeoForge 1.21.1 does NOT bundle the SQLite JDBC driver (verified via issue #9 log:
+ * "No suitable driver found for jdbc:sqlite:..."). Rather than ship a native SQLite binary
+ * as a jarJar dependency (platform-specific, large, fragile), we fall back to a single JSON
+ * file. For a localhost dashboard with tens of boards this is plenty fast and has zero
+ * external dependencies.
+ *
+ * <p><b>Storage format</b>: {@code config/webboard-boards.json} containing a JSON object:
+ * <pre>
+ * {
+ *   "boards": {
+ *     "Board @ 12,64,-8": {
+ *       "sourceType": "create:time_of_day",
+ *       "lines": ["06:30"],
+ *       "lastUpdatedMs": 1782555000000,
+ *       "status": "active"
+ *     },
+ *     ...
+ *   }
+ * }
+ * </pre>
+ * Removed boards are kept with {@code status: "removed"} for future analytics.
+ *
+ * <p><b>Thread model &amp; performance</b>: writes happen on the game thread (via
+ * {@link WebMirror}) and on the WS thread (via {@code WebSocketHub.onChange}). To avoid
+ * hammering the disk on every refresh, writes are <em>buffered</em> in memory and flushed
+ * to disk by a single-thread daemon executor every 5 seconds (debounced). The flush is
+ * atomic: write to {@code *.tmp} then {@link Files#move} with ATOMIC_MOVE. Reads at server
+ * start are a single file load.
  *
  * <p>Singleton pattern, mirroring {@link com.example.webboard.content.registry.BoardRegistry}.
  * All public methods are no-ops (silently return) if {@link #init()} has not been called or
- * if {@link #close()} has already run, so callers don't need guards in hot paths.
- *
- * <p>Thread safety: SQLite in WAL mode allows concurrent reads and serialized writes. We use
- * a single {@link Connection} with {@code INSERT OR REPLACE} upserts; SQLite handles the
- * locking internally. All JDBC operations use try-with-resources.
+ * if {@link #close()} has already run.
  */
 public final class BoardDatabase {
 
@@ -37,238 +66,197 @@ public final class BoardDatabase {
         return INSTANCE;
     }
 
-    private static final String DB_PATH = "config/webboard-boards.db";
-    private static final String JDBC_URL = "jdbc:sqlite:" + DB_PATH;
+    private static final String DB_PATH = "config/webboard-boards.json";
+    private static final long FLUSH_INTERVAL_SECONDS = 5;
 
-    /** Connection is kept open for the lifetime of the server. */
-    private volatile Connection connection;
+    /** In-memory mirror of the file. Single source of truth between flushes. */
+    private final ConcurrentHashMap<String, BoardEntry> entries = new ConcurrentHashMap<>();
+
+    /** True when an entry has been modified since the last flush. */
+    private volatile boolean dirty = false;
+
     private volatile boolean initialized = false;
+    private ScheduledExecutorService flushExecutor;
 
     private BoardDatabase() {}
 
+    /** In-memory representation of a persisted board. */
+    private record BoardEntry(String sourceType, List<String> lines, long lastUpdatedMs, String status) {}
+
     /**
-     * Initialize the database -- loads the JDBC driver, opens the connection, and creates
-     * the {@code boards} table + index if they don't already exist. Safe to call multiple times;
-     * subsequent calls after the first are no-ops.
+     * Initialize the database -- loads the JSON file (if it exists) and starts the flush
+     * scheduler. Safe to call multiple times; subsequent calls after the first are no-ops.
      */
     public synchronized void init() {
         if (initialized) return;
 
         try {
-            // Ensure the config directory exists so SQLite can create the file.
-            java.nio.file.Path configDir = java.nio.file.Path.of("config");
-            if (!java.nio.file.Files.exists(configDir)) {
-                java.nio.file.Files.createDirectories(configDir);
+            Path dbPath = Path.of(DB_PATH);
+            if (Files.exists(dbPath)) {
+                loadFromFile(dbPath);
             }
+            // Ensure parent directory exists for future writes.
+            Files.createDirectories(dbPath.getParent());
 
-            connection = DriverManager.getConnection(JDBC_URL);
-            connection.setAutoCommit(true);
-
-            try (Statement stmt = connection.createStatement()) {
-                stmt.executeUpdate(
-                    "CREATE TABLE IF NOT EXISTS boards ("
-                    + "name TEXT PRIMARY KEY,"
-                    + "source_type TEXT NOT NULL,"
-                    + "lines_json TEXT NOT NULL DEFAULT '[]',"
-                    + "last_updated_ms BIGINT NOT NULL,"
-                    + "status TEXT NOT NULL DEFAULT 'active',"
-                    + "created_at BIGINT NOT NULL,"
-                    + "updated_at BIGINT NOT NULL"
-                    + ")"
-                );
-                stmt.executeUpdate(
-                    "CREATE INDEX IF NOT EXISTS idx_status ON boards(status)"
-                );
-            }
+            flushExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "web-board-db-flusher");
+                t.setDaemon(true);
+                return t;
+            });
+            flushExecutor.scheduleWithFixedDelay(this::flushIfDirty,
+                    FLUSH_INTERVAL_SECONDS, FLUSH_INTERVAL_SECONDS, TimeUnit.SECONDS);
 
             initialized = true;
-            LOGGER.info("[web_board] SQLite database initialized at {}", DB_PATH);
+            LOGGER.info("[web_board] JSON database initialized at {} ({} boards loaded)",
+                    DB_PATH, entries.size());
         } catch (Exception e) {
             LOGGER.error("[web_board] Failed to initialize database: {}", e.toString(), e);
             initialized = false;
-            closeConnection();
         }
     }
 
     /**
-     * Insert or update a board. Uses {@code INSERT OR REPLACE} so the same call works for both
-     * new and existing boards. Only writes when the board is active (status='active').
-     *
-     * @param content the board content to persist
+     * Insert or update a board. The write is buffered in memory; the flush scheduler persists
+     * it to disk at most once every 5 seconds. Safe to call from any thread.
      */
     public void upsert(BoardContent content) {
         if (!initialized) return;
-        long now = System.currentTimeMillis();
-        try (PreparedStatement ps = connection.prepareStatement(
-            "INSERT OR REPLACE INTO boards (name, source_type, lines_json, last_updated_ms, status, created_at, updated_at) "
-            + "VALUES (?, ?, ?, ?, 'active', "
-            + "COALESCE((SELECT created_at FROM boards WHERE name = ?), ?), ?)"
-        )) {
-            ps.setString(1, content.name());
-            ps.setString(2, content.sourceType());
-            ps.setString(3, linesToJson(content.lines()));
-            ps.setLong(4, content.lastUpdatedMs());
-            ps.setString(5, content.name()); // subquery parameter
-            ps.setLong(6, now);              // fallback created_at for new rows
-            ps.setLong(7, now);              // updated_at
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            LOGGER.error("[web_board] Failed to upsert board '{}': {}", content.name(), e.toString());
-        }
+        entries.put(content.name(), new BoardEntry(
+                content.sourceType(),
+                new ArrayList<>(content.lines()),
+                content.lastUpdatedMs(),
+                "active"));
+        dirty = true;
     }
 
     /**
-     * Mark a board as removed. The row is kept in the database for analytics/historical purposes
-     * but will no longer appear in {@link #loadAll()}.
-     *
-     * @param name the board name to mark as removed
+     * Mark a board as removed. The entry is kept in the JSON file for analytics but flagged
+     * with {@code status: "removed"} so {@link #loadAll()} skips it. Safe to call from any thread.
      */
     public void markRemoved(String name) {
         if (!initialized) return;
-        long now = System.currentTimeMillis();
-        try (PreparedStatement ps = connection.prepareStatement(
-            "UPDATE boards SET status = 'removed', updated_at = ? WHERE name = ?"
-        )) {
-            ps.setLong(1, now);
-            ps.setString(2, name);
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            LOGGER.error("[web_board] Failed to mark board '{}' as removed: {}", name, e.toString());
+        BoardEntry existing = entries.get(name);
+        if (existing != null) {
+            entries.put(name, new BoardEntry(
+                    existing.sourceType(),
+                    existing.lines(),
+                    existing.lastUpdatedMs(),
+                    "removed"));
+            dirty = true;
         }
     }
 
     /**
-     * Load all active (non-removed) boards from the database. Called at server start to restore
-     * boards persisted from a previous session.
+     * Load all active (non-removed) boards. Called at server start to restore boards persisted
+     * from a previous session.
      *
      * @return a list of active boards; empty if none found or if not initialized
      */
     public List<BoardContent> loadAll() {
         if (!initialized) return List.of();
-
         List<BoardContent> result = new ArrayList<>();
-        try (PreparedStatement ps = connection.prepareStatement(
-            "SELECT name, source_type, lines_json, last_updated_ms FROM boards WHERE status = 'active'"
-        );
-             ResultSet rs = ps.executeQuery()) {
-            while (rs.next()) {
-                String name = rs.getString("name");
-                String sourceType = rs.getString("source_type");
-                String linesJson = rs.getString("lines_json");
-                long lastUpdatedMs = rs.getLong("last_updated_ms");
-
-                List<String> lines = parseLines(linesJson);
-                result.add(new BoardContent(name, sourceType, lines, lastUpdatedMs));
+        for (var e : entries.entrySet()) {
+            BoardEntry be = e.getValue();
+            if ("active".equals(be.status())) {
+                result.add(new BoardContent(e.getKey(), be.sourceType(),
+                        new ArrayList<>(be.lines()), be.lastUpdatedMs()));
             }
-        } catch (SQLException e) {
-            LOGGER.error("[web_board] Failed to load boards from database: {}", e.toString());
         }
         return result;
     }
 
     /**
-     * Close the database connection. Called at server stop. All subsequent public method calls
-     * become no-ops until {@link #init()} is called again.
+     * Close the database: performs one final flush then stops the scheduler. All subsequent
+     * public method calls become no-ops until {@link #init()} is called again.
      */
     public synchronized void close() {
         if (!initialized) return;
-        closeConnection();
+        // Final flush before shutdown so no buffered writes are lost.
+        flushIfDirty();
+        if (flushExecutor != null) {
+            flushExecutor.shutdown();
+            try {
+                if (!flushExecutor.awaitTermination(2, TimeUnit.SECONDS)) {
+                    flushExecutor.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                flushExecutor.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
+            flushExecutor = null;
+        }
         initialized = false;
-        LOGGER.info("[web_board] SQLite database connection closed");
+        LOGGER.info("[web_board] JSON database closed");
     }
 
-    /** Returns true if the database has been initialized and the connection is open. */
+    /** Returns true if the database has been initialized. */
     public boolean isInitialized() {
         return initialized;
     }
 
-    private void closeConnection() {
-        if (connection != null) {
-            try {
-                connection.close();
-            } catch (SQLException e) {
-                LOGGER.warn("[web_board] Error closing database connection: {}", e.toString());
-            }
-            connection = null;
+    // ---------- internal ----------
+
+    /** Flush to disk only if writes have occurred since the last flush. */
+    private synchronized void flushIfDirty() {
+        if (!dirty || !initialized) return;
+        dirty = false;
+        Path dbPath = Path.of(DB_PATH);
+        Path tmpPath = dbPath.resolveSibling(dbPath.getFileName() + ".tmp");
+        try {
+            String json = serializeAll();
+            Files.writeString(tmpPath, json, StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+            Files.move(tmpPath, dbPath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (IOException e) {
+            LOGGER.error("[web_board] Failed to flush database to {}: {}", DB_PATH, e.toString());
+            dirty = true; // try again next cycle
         }
     }
 
-    /**
-     * Convert a list of lines to a JSON array string. Uses hand-rolled JSON to avoid pulling in
-     * a serialization library. Lines containing special characters are escaped.
-     */
-    private static String linesToJson(List<String> lines) {
-        StringBuilder sb = new StringBuilder("[");
+    /** Serialize the entire entries map to a JSON string. */
+    private String serializeAll() {
+        StringBuilder sb = new StringBuilder(256 * (entries.size() + 1));
+        sb.append("{\"boards\":{");
         boolean first = true;
-        for (String line : lines) {
+        for (var e : entries.entrySet()) {
             if (!first) sb.append(',');
-            sb.append(JsonEscape.quote(line));
             first = false;
+            BoardEntry be = e.getValue();
+            sb.append(JsonEscape.quote(e.getKey())).append(":{");
+            sb.append("\"sourceType\":").append(JsonEscape.quote(be.sourceType())).append(',');
+            sb.append("\"lines\":[");
+            boolean firstLine = true;
+            for (String line : be.lines()) {
+                if (!firstLine) sb.append(',');
+                firstLine = false;
+                sb.append(JsonEscape.quote(line));
+            }
+            sb.append("],");
+            sb.append("\"lastUpdatedMs\":").append(be.lastUpdatedMs()).append(',');
+            sb.append("\"status\":").append(JsonEscape.quote(be.status()));
+            sb.append('}');
         }
-        sb.append(']');
+        sb.append("}}");
         return sb.toString();
     }
 
-    /**
-     * Parse a JSON array of strings back into a List. Simple hand-rolled parser for
-     * the expected format: {@code ["line1","line2",...]}.
-     */
-    private static List<String> parseLines(String json) {
-        if (json == null || json.isBlank() || json.equals("[]")) {
-            return List.of();
+    /** Load entries from the JSON file into the in-memory map. Tolerant of missing/corrupt files. */
+    private void loadFromFile(Path dbPath) {
+        try {
+            String json = Files.readString(dbPath, StandardCharsets.UTF_8);
+            Map<String, BoardEntry> parsed = JsonFileParser.parse(json);
+            entries.clear();
+            entries.putAll(parsed);
+        } catch (IOException e) {
+            LOGGER.warn("[web_board] Failed to read database file {}: {}", DB_PATH, e.toString());
+        } catch (RuntimeException e) {
+            LOGGER.warn("[web_board] Database file {} is corrupt, starting fresh: {}", DB_PATH, e.toString());
         }
-        List<String> result = new ArrayList<>();
-        // Strip brackets
-        String inner = json.trim();
-        if (inner.startsWith("[")) inner = inner.substring(1);
-        if (inner.endsWith("]")) inner = inner.substring(0, inner.length() - 1);
-        inner = inner.trim();
-        if (inner.isEmpty()) return List.of();
-
-        // Simple state-machine parser for quoted strings
-        int i = 0;
-        while (i < inner.length()) {
-            // Skip whitespace and commas
-            while (i < inner.length() && (inner.charAt(i) == ' ' || inner.charAt(i) == ',' || inner.charAt(i) == '\n' || inner.charAt(i) == '\r' || inner.charAt(i) == '\t')) {
-                i++;
-            }
-            if (i >= inner.length()) break;
-
-            if (inner.charAt(i) == '"') {
-                i++; // skip opening quote
-                StringBuilder sb = new StringBuilder();
-                while (i < inner.length()) {
-                    char c = inner.charAt(i);
-                    if (c == '\\' && i + 1 < inner.length()) {
-                        i++;
-                        char escaped = inner.charAt(i);
-                        switch (escaped) {
-                            case '"'  -> sb.append('"');
-                            case '\\' -> sb.append('\\');
-                            case 'n'  -> sb.append('\n');
-                            case 'r'  -> sb.append('\r');
-                            case 't'  -> sb.append('\t');
-                            default   -> sb.append(escaped);
-                        }
-                    } else if (c == '"') {
-                        break;
-                    } else {
-                        sb.append(c);
-                    }
-                    i++;
-                }
-                result.add(sb.toString());
-                i++; // skip closing quote
-            } else {
-                i++; // skip unexpected characters
-            }
-        }
-        return result;
     }
 
     /**
-     * Minimal JSON string escaping for lines stored in SQLite. Mirrors the escaping logic
-     * in {@link com.example.webboard.content.httpserver.JsonUtil#quote} but lives here to
+     * Minimal JSON string escaping. Mirrors the escaping logic in
+     * {@link com.example.webboard.content.httpserver.JsonUtil#quote} but lives here to
      * avoid a cross-package dependency from persistence to httpserver.
      */
     private static final class JsonEscape {
@@ -294,6 +282,174 @@ public final class BoardDatabase {
             }
             sb.append('"');
             return sb.toString();
+        }
+    }
+
+    /**
+     * Tiny recursive-descent JSON parser for the file format produced by {@link #serializeAll}.
+     * We don't pull in Jackson/Gson to keep the dependency footprint at zero. Only supports
+     * the exact shape we write: {@code {"boards": {string: {sourceType, lines, lastUpdatedMs, status}}}}.
+     */
+    private static final class JsonFileParser {
+        private final String s;
+        private int i;
+
+        private JsonFileParser(String s) {
+            this.s = s;
+            this.i = 0;
+        }
+
+        static Map<String, BoardEntry> parse(String s) {
+            JsonFileParser p = new JsonFileParser(s);
+            p.skipWs();
+            p.expect('{');
+            p.skipWs();
+            Map<String, BoardEntry> result = new LinkedHashMap<>();
+            // Empty object check
+            if (p.peek() == '}') { p.i++; return result; }
+            // Expect "boards": {...}
+            String key = p.parseString();
+            p.skipWs(); p.expect(':'); p.skipWs();
+            if (!"boards".equals(key)) {
+                // Unknown top-level key — skip its value.
+                p.skipValue();
+                // For now we only know "boards"; bail if that's all we see.
+                p.skipWs();
+                if (p.peek() == '}') { p.i++; return result; }
+            }
+            p.expect('{');
+            p.skipWs();
+            if (p.peek() == '}') { p.i++; return result; }
+            while (true) {
+                String name = p.parseString();
+                p.skipWs(); p.expect(':'); p.skipWs();
+                p.expect('{');
+                p.skipWs();
+                String sourceType = "unknown";
+                List<String> lines = new ArrayList<>();
+                long lastUpdatedMs = 0;
+                String status = "active";
+                if (p.peek() != '}') {
+                    while (true) {
+                        String field = p.parseString();
+                        p.skipWs(); p.expect(':'); p.skipWs();
+                        switch (field) {
+                            case "sourceType" -> sourceType = p.parseString();
+                            case "lines" -> {
+                                p.expect('[');
+                                p.skipWs();
+                                if (p.peek() != ']') {
+                                    while (true) {
+                                        lines.add(p.parseString());
+                                        p.skipWs();
+                                        if (p.peek() == ',') { p.i++; p.skipWs(); continue; }
+                                        break;
+                                    }
+                                }
+                                p.expect(']');
+                            }
+                            case "lastUpdatedMs" -> lastUpdatedMs = p.parseLong();
+                            case "status" -> status = p.parseString();
+                            default -> p.skipValue();
+                        }
+                        p.skipWs();
+                        if (p.peek() == ',') { p.i++; p.skipWs(); continue; }
+                        break;
+                    }
+                }
+                p.expect('}');
+                result.put(name, new BoardEntry(sourceType, lines, lastUpdatedMs, status));
+                p.skipWs();
+                if (p.peek() == ',') { p.i++; p.skipWs(); continue; }
+                break;
+            }
+            p.expect('}');
+            return result;
+        }
+
+        private void skipWs() {
+            while (i < s.length()) {
+                char c = s.charAt(i);
+                if (c == ' ' || c == '\t' || c == '\n' || c == '\r') i++;
+                else break;
+            }
+        }
+
+        private char peek() {
+            if (i >= s.length()) throw new RuntimeException("unexpected EOF");
+            return s.charAt(i);
+        }
+
+        private void expect(char c) {
+            skipWs();
+            if (i >= s.length() || s.charAt(i) != c) {
+                throw new RuntimeException("expected '" + c + "' at " + i + ", got " +
+                        (i < s.length() ? "'" + s.charAt(i) + "'" : "EOF"));
+            }
+            i++;
+        }
+
+        private String parseString() {
+            skipWs();
+            expect('"');
+            StringBuilder sb = new StringBuilder();
+            while (i < s.length()) {
+                char c = s.charAt(i++);
+                if (c == '"') return sb.toString();
+                if (c == '\\' && i < s.length()) {
+                    char esc = s.charAt(i++);
+                    switch (esc) {
+                        case '"'  -> sb.append('"');
+                        case '\\' -> sb.append('\\');
+                        case '/'  -> sb.append('/');
+                        case 'n'  -> sb.append('\n');
+                        case 'r'  -> sb.append('\r');
+                        case 't'  -> sb.append('\t');
+                        case 'u'  -> {
+                            if (i + 4 <= s.length()) {
+                                sb.append((char) Integer.parseInt(s.substring(i, i + 4), 16));
+                                i += 4;
+                            }
+                        }
+                        default -> sb.append(esc);
+                    }
+                } else {
+                    sb.append(c);
+                }
+            }
+            throw new RuntimeException("unterminated string");
+        }
+
+        private long parseLong() {
+            skipWs();
+            int start = i;
+            if (i < s.length() && (s.charAt(i) == '-' || s.charAt(i) == '+')) i++;
+            while (i < s.length() && Character.isDigit(s.charAt(i))) i++;
+            if (start == i) throw new RuntimeException("expected number at " + i);
+            return Long.parseLong(s.substring(start, i));
+        }
+
+        private void skipValue() {
+            skipWs();
+            char c = peek();
+            if (c == '"') { parseString(); return; }
+            if (c == '{' || c == '[') {
+                char open = c, close = (c == '{') ? '}' : ']';
+                int depth = 0;
+                while (i < s.length()) {
+                    char ch = s.charAt(i++);
+                    if (ch == '"') { parseString(); continue; }
+                    if (ch == open) depth++;
+                    else if (ch == close) { depth--; if (depth == 0) return; }
+                }
+                return;
+            }
+            // number / true / false / null
+            while (i < s.length()) {
+                char ch = s.charAt(i);
+                if (ch == ',' || ch == '}' || ch == ']' || ch == ' ' || ch == '\n' || ch == '\t' || ch == '\r') break;
+                i++;
+            }
         }
     }
 }
