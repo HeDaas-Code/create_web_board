@@ -114,6 +114,28 @@ dependencies {
     jarJar(implementation("org.eclipse.jetty.websocket:websocket-core-common:${jetty_version}"))
     jarJar(implementation("org.eclipse.jetty.websocket:websocket-servlet:${jetty_version}"))
     jarJar(implementation("org.eclipse.jetty.toolchain:jetty-jakarta-servlet-api:5.0.2"))
+
+    // Kotlin stdlib — Javalin 6.3.0 is compiled against Kotlin 1.9.25 and its
+    // module-info.class declares `requires kotlin.stdlib` (transitive). NeoForge /
+    // MC 1.21.1 does NOT ship kotlin-stdlib on the runtime classpath, so without
+    // this entry the JVM's module system fails to resolve io.javalin at startup:
+    //
+    //     java.lang.module.FindException: Module kotlin.stdlib not found,
+    //                                    required by io.javalin
+    //
+    // Issue #6. Pinned to 1.9.25 to match Javalin's compile target exactly —
+    // mixing minor versions is safe at the bytecode level but Kotlin's stdlib
+    // is dual-released as Multi-Release JAR with a versions/9/module-info.class
+    // (module name `kotlin.stdlib`), so the JPMS module name stays stable
+    // across 1.9.x and 2.0.x regardless of which artifact we pick. 1.9.25 is
+    // the lowest-risk choice (proven build matrix, no 2.x coroutine ABI drift).
+    //
+    // moddev's jarJar is root-only — kotlin-stdlib does not pull any kotlin
+    // artifacts onto this project (Jetty doesn't depend on Kotlin, and the only
+    // Kotlin-flagged deps in Javalin's POM — jackson-module-kotlin, moshi-kotlin
+    // — are `<optional>true` or `<scope>test`), so no kotlin-* transitive to
+    // enumerate here. stdlib itself exports the entire `kotlin.*` package set.
+    jarJar(implementation("org.jetbrains.kotlin:kotlin-stdlib:${kotlin_version}"))
 }
 
 sourceSets.main {

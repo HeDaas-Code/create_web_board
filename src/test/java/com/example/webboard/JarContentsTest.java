@@ -75,6 +75,26 @@ class JarContentsTest {
         }
     }
 
+    @Test
+    void shippedJar_containsKotlinStdlib() throws IOException {
+        // Regression guard for issue #6: Javalin's module-info.class declares
+        // `requires kotlin.stdlib` (transitive). Without kotlin-stdlib on the
+        // module path at runtime, JVM startup dies with
+        //   java.lang.module.FindException: Module kotlin.stdlib not found,
+        //                                  required by io.javalin
+        // kotlin.Unit is the canonical "stdlib is present" probe — it's in the
+        // top-level kotlin package, present in every stdlib version since 1.0.
+        Path jar = findBuiltJar();
+        if (jar == null) return;
+        try (JarFile jf = new JarFile(jar.toFile())) {
+            assertTrue(containsRecursively(jf, "kotlin/Unit.class"),
+                    "shipped jar missing kotlin/Unit.class — "
+                            + "this regresses issue #6 (FindException: kotlin.stdlib). "
+                            + "Add jarJar(implementation(\"org.jetbrains.kotlin:kotlin-stdlib:\" + kotlin_version)) "
+                            + "to build.gradle.");
+        }
+    }
+
     // ---- helpers ----
 
     private static Path findBuiltJar() throws IOException {
