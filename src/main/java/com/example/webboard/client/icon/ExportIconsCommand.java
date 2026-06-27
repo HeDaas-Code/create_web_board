@@ -1,15 +1,14 @@
 package com.example.webboard.client.icon;
 
 import com.example.webboard.CreateWebBoard;
-import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import net.minecraft.client.Minecraft;
-import net.minecraft.commands.SharedSuggestionProvider;
+import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
+import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.client.event.RegisterClientCommandsEvent;
-import net.neoforged.neoforge.event.tick.ClientTickEvent;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -37,9 +36,9 @@ import java.util.Map;
  * completion is logged to chat when the zip is written.
  *
  * <p><b>Client command source type</b>: NeoForge's {@link RegisterClientCommandsEvent}
- * dispatcher is typed {@code CommandDispatcher<SharedSuggestionProvider>}, so we build
- * commands with {@code LiteralArgumentBuilder.<SharedSuggestionProvider>literal(...)} — NOT
- * {@code Commands.literal(...)} which returns the server-side {@code CommandSourceStack} type.
+ * dispatcher is typed {@code CommandDispatcher<CommandSourceStack>} (client commands share
+ * the server-side source type — the source is just wrapped client-side), so we build
+ * commands with {@link Commands#literal(String)} just like server commands.
  */
 @EventBusSubscriber(modid = CreateWebBoard.MOD_ID, value = Dist.CLIENT)
 public final class ExportIconsCommand {
@@ -55,8 +54,8 @@ public final class ExportIconsCommand {
     @SubscribeEvent
     public static void onRegisterClientCommands(RegisterClientCommandsEvent event) {
         event.getDispatcher().register(
-                LiteralArgumentBuilder.<SharedSuggestionProvider>literal("webboard")
-                        .then(LiteralArgumentBuilder.<SharedSuggestionProvider>literal("export-icons")
+                Commands.literal("webboard")
+                        .then(Commands.literal("export-icons")
                                 .executes(ctx -> startExport()))
         );
     }
