@@ -1,7 +1,5 @@
 {
-    "web_board.placeholder": "[Web Board — see /api/boards in your browser]",
-    "web_board.be_summary.no_source": "(no block entity at source)",
-    "web_board.be_summary.pos": "pos: %d, %d, %d",
-    "create_web_board.display_source.web_board": "Web Board (placeholder)",
-    "create_web_board.display_source.be_summary": "Block Entity Summary"
+    "web_board.toggle.on": "Web: ON",
+    "web_board.toggle.off": "Web: OFF",
+    "web_board.toggle.tooltip": "Mirror this Display Link to the web dashboard"
 }

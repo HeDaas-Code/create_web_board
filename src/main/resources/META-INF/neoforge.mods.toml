@@ -9,9 +9,13 @@ version = "${version}"
 displayName = "Create Web Board"
 authors = "hedaas"
 description = '''
-Display Link source that mirrors each link to a local browser dashboard in real time.
-This file is generated from ${version} — see build.gradle processResources.
+Adds a "Web" toggle to every Display Link. When enabled, the link's live output is
+mirrored to a local browser dashboard in real time. This file is generated from
+${version} — see build.gradle processResources.
 '''
+
+[[mixins]]
+config = "mixins.create_web_board.json"
 
 [[dependencies.create_web_board]]
     modId = "minecraft"
