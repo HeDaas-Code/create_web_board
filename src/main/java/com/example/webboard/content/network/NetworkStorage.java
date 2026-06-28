@@ -184,8 +184,8 @@ public final class NetworkStorage {
             // Parse key
             var keyResult = parseString(s, skipWs(s, i));
             if (keyResult == null) break;
-            String key = keyResult[0];
-            i = keyResult[1];
+            String key = (String) keyResult[0];
+            i = (Integer) keyResult[1];
             i = skipWs(s, i);
             if (i >= s.length() || s.charAt(i) != ':') break;
             i++;
@@ -200,8 +200,8 @@ public final class NetworkStorage {
                     if (s.charAt(i) != '{') break;
                     var netResult = parseNetwork(s, i);
                     if (netResult == null) break;
-                    NetworkDefinition net = netResult[0];
-                    i = netResult[1];
+                    NetworkDefinition net = (NetworkDefinition) netResult[0];
+                    i = (Integer) netResult[1];
                     if (net != null) {
                         networks.put(net.id(), net);
                         // Update id counter to avoid collisions
@@ -237,16 +237,16 @@ public final class NetworkStorage {
         while (i < s.length()) {
             var keyResult = parseString(s, skipWs(s, i));
             if (keyResult == null) break;
-            String key = keyResult[0];
-            i = keyResult[1];
+            String key = (String) keyResult[0];
+            i = (Integer) keyResult[1];
             i = skipWs(s, i);
             if (i >= s.length() || s.charAt(i) != ':') break;
             i++;
             i = skipWs(s, i);
 
             switch (key) {
-                case "id" -> { var r = parseString(s, i); if (r != null) { id = r[0]; i = r[1]; } }
-                case "name" -> { var r = parseString(s, i); if (r != null) { name = r[0]; i = r[1]; } }
+                case "id" -> { var r = parseString(s, i); if (r != null) { id = (String) r[0]; i = (Integer) r[1]; } }
+                case "name" -> { var r = parseString(s, i); if (r != null) { name = (String) r[0]; i = (Integer) r[1]; } }
                 case "members" -> {
                     if (i < s.length() && s.charAt(i) == '[') {
                         i++;
@@ -256,8 +256,8 @@ public final class NetworkStorage {
                                 if (s.charAt(i) != '{') break;
                                 var mResult = parseMember(s, i);
                                 if (mResult == null) break;
-                                NetworkMember m = mResult[0];
-                                i = mResult[1];
+                                NetworkMember m = (NetworkMember) mResult[0];
+                                i = (Integer) mResult[1];
                                 if (m != null) members.add(m);
                                 i = skipWs(s, i);
                                 if (i < s.length() && s.charAt(i) == ',') { i++; i = skipWs(s, i); continue; }
@@ -289,18 +289,18 @@ public final class NetworkStorage {
         while (i < s.length()) {
             var keyResult = parseString(s, skipWs(s, i));
             if (keyResult == null) break;
-            String key = keyResult[0];
-            i = keyResult[1];
+            String key = (String) keyResult[0];
+            i = (Integer) keyResult[1];
             i = skipWs(s, i);
             if (i >= s.length() || s.charAt(i) != ':') break;
             i++;
             i = skipWs(s, i);
 
             switch (key) {
-                case "boardName" -> { var r = parseString(s, i); if (r != null) { boardName = r[0]; i = r[1]; } }
-                case "role" -> { var r = parseString(s, i); if (r != null) { role = r[0]; i = r[1]; } }
-                case "label" -> { var r = parseString(s, i); if (r != null) { label = r[0]; i = r[1]; } }
-                case "lineIndex" -> { var r = parseLong(s, i); if (r != null) { lineIndex = (int) r[0]; i = r[1]; } }
+                case "boardName" -> { var r = parseString(s, i); if (r != null) { boardName = (String) r[0]; i = (Integer) r[1]; } }
+                case "role" -> { var r = parseString(s, i); if (r != null) { role = (String) r[0]; i = (Integer) r[1]; } }
+                case "label" -> { var r = parseString(s, i); if (r != null) { label = (String) r[0]; i = (Integer) r[1]; } }
+                case "lineIndex" -> { var r = parseLong(s, i); if (r != null) { lineIndex = ((Long) r[0]).intValue(); i = (Integer) r[1]; } }
                 default -> i = skipValue(s, i);
             }
             i = skipWs(s, i);
@@ -368,13 +368,13 @@ public final class NetworkStorage {
         i = skipWs(s, i);
         if (i >= s.length()) return i;
         char c = s.charAt(i);
-        if (c == '"') { var r = parseString(s, i); return r != null ? r[1] : i + 1; }
+        if (c == '"') { var r = parseString(s, i); return r != null ? (Integer) r[1] : i + 1; }
         if (c == '{' || c == '[') {
             char open = c, close = (c == '{') ? '}' : ']';
             int depth = 0;
             while (i < s.length()) {
                 char ch = s.charAt(i);
-                if (ch == '"') { var r = parseString(s, i); if (r != null) { i = r[1]; continue; } }
+                if (ch == '"') { var r = parseString(s, i); if (r != null) { i = (Integer) r[1]; continue; } }
                 if (ch == open) depth++;
                 else if (ch == close) { depth--; if (depth == 0) { i++; return i; } }
                 i++;
