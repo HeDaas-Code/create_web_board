@@ -151,6 +151,12 @@ public final class ItemIconRenderer {
                 GuiGraphics gg = new GuiGraphics(mc, bufSrc);
                 PoseStack pose = gg.pose();
                 pose.pushPose();
+                // CRITICAL: push items deep into -Z so they fall inside the ortho frustum.
+                // setOrtho(0,32,32,0, 1000, 21000) makes visible eye-space z ∈ [-21000, -1000].
+                // GuiGraphics.renderItem internally translates to z≈+150, which is OUTSIDE
+                // the frustum → every vertex is clipped by the near plane → blank icon.
+                // Translating to -8000 puts the item safely in the middle of the frustum.
+                pose.translate(0, 0, -8000);
                 // renderItem draws 16×16; scale ×2 to fill the 32×32 FBO.
                 pose.scale(2, 2, 1);
                 gg.renderItem(stack, 0, 0);
