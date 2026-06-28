@@ -1153,12 +1153,12 @@ html, body {
 }
 .net-stats {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, 1fr);
     gap: 8px;
     padding: 12px 16px 8px;
 }
 .net-stats.with-storage {
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, 1fr);
 }
 .net-storage-row {
     grid-column: 1 / -1;
@@ -1209,8 +1209,7 @@ html, body {
 .net-stat.produce .net-stat-value { color: var(--ok); }
 .net-stat.consume { border-color: rgba(250, 162, 27, 0.3); }
 .net-stat.consume .net-stat-value { color: var(--accent); }
-.net-stat.surplus.pos .net-stat-value { color: var(--ok); }
-.net-stat.surplus.neg .net-stat-value { color: var(--err); }
+/* surplus stat 已移除：剩余应力改由 storage 成员实测值代表，不再用 surplus=产−消 派生 */
 
 .net-members {
     display: flex;
@@ -1514,6 +1513,6 @@ html, body {
 .chart-rate-annotation .rate-flat { color: var(--text-2); }
 
 @media (max-width: 720px) {
-    .net-stats { grid-template-columns: repeat(3, 1fr); }
+    .net-stats { grid-template-columns: repeat(2, 1fr); }
     .net-member { flex-wrap: wrap; }
 }

@@ -500,13 +500,13 @@
     /** Stress stat labels aligned with Create's kinetics goggle terminology.
      *  producer 累加 → 总应力 (网络总应力容量)
      *  consumer 累加 → 应力 (当前消耗)
-     *  surplus      → 剩余应力 (总应力 − 应力)
-     *  storage      → 存储 (飞轮/缓冲，机械动力无此概念，保留)
+     *  storage 累加 → 剩余应力 (飞轮/缓冲等存储成员的实测值；剩余应力即存储，
+     *                不再单独计算 surplus=产−消 的派生线)
      *  网络应力视图只渲染纯数值，不显示进度条和百分比。 */
-    const STRESS_LABELS = { total: "总应力", used: "应力", remaining: "剩余应力", storage: "存储" };
+    const STRESS_LABELS = { total: "总应力", used: "应力", remaining: "剩余应力" };
 
     /** Aggregate a network's current values from its member boards. Returns
-     *  {production, consumption, storage, surplus, activeMembers, memberValues}. */
+     *  {production, consumption, storage, activeMembers, memberValues}. */
     function computeNetworkAggregate(net) {
         let production = 0, consumption = 0, storage = 0, activeMembers = 0;
         const memberValues = [];
@@ -521,8 +521,7 @@
             else if (m.role === "consumer") consumption += value;
             else if (m.role === "storage") storage += value;
         });
-        const surplus = production - consumption;
-        return { production, consumption, storage, surplus, activeMembers, memberValues };
+        return { production, consumption, storage, activeMembers, memberValues };
     }
 
     // ---------- Stress network: grid rendering ----------
@@ -602,20 +601,20 @@
         head.appendChild(live);
         card.appendChild(head);
 
-        // Stats: 总应力 / 应力 / 剩余应力 (and 存储 row if there are storage members).
+        // Stats: 总应力 / 应力 (+ 剩余应力 row if there are storage members).
+        // 剩余应力 = storage 成员实测累加；无 storage 成员则不显示。
         // 纯数值显示，无进度条、无百分比。
+        const hasStorage = (net.members || []).some((m) => m.role === "storage");
         const stats = document.createElement("div");
-        stats.className = "net-stats" + (agg.storage !== 0 || (net.members || []).some((m) => m.role === "storage") ? " with-storage" : "");
+        stats.className = "net-stats" + (hasStorage ? " with-storage" : "");
         stats.appendChild(renderNetStat(STRESS_LABELS.total, agg.production, "produce"));
         stats.appendChild(renderNetStat(STRESS_LABELS.used, agg.consumption, "consume"));
-        const surplusCls = "surplus " + (agg.surplus >= 0 ? "pos" : "neg");
-        stats.appendChild(renderNetStat(STRESS_LABELS.remaining, agg.surplus, surplusCls));
-        if ((net.members || []).some((m) => m.role === "storage")) {
+        if (hasStorage) {
             const row = document.createElement("div");
             row.className = "net-storage-row";
             const lab = document.createElement("span");
             lab.className = "net-stat-label";
-            lab.textContent = STRESS_LABELS.storage;
+            lab.textContent = STRESS_LABELS.remaining;
             const val = document.createElement("span");
             val.className = "net-stat-value";
             val.textContent = formatNum(agg.storage);
@@ -1147,18 +1146,17 @@
     function renderNetworkModalLive(net) {
         const agg = computeNetworkAggregate(net);
 
-        // Stats: 总应力 / 应力 / 剩余应力 (+ 存储 row). 纯数值，无进度条/百分比。
+        // Stats: 总应力 / 应力 (+ 剩余应力 row). 剩余应力=storage 实测；纯数值，无进度条/百分比。
+        const hasStorage = (net.members || []).some((m) => m.role === "storage");
         els.networkModalStats.innerHTML = "";
         els.networkModalStats.appendChild(renderNetStat(STRESS_LABELS.total, agg.production, "produce"));
         els.networkModalStats.appendChild(renderNetStat(STRESS_LABELS.used, agg.consumption, "consume"));
-        const surplusCls = "surplus " + (agg.surplus >= 0 ? "pos" : "neg");
-        els.networkModalStats.appendChild(renderNetStat(STRESS_LABELS.remaining, agg.surplus, surplusCls));
-        if ((net.members || []).some((m) => m.role === "storage")) {
+        if (hasStorage) {
             const row = document.createElement("div");
             row.className = "net-storage-row";
             const lab = document.createElement("span");
             lab.className = "net-stat-label";
-            lab.textContent = STRESS_LABELS.storage;
+            lab.textContent = STRESS_LABELS.remaining;
             const val = document.createElement("span");
             val.className = "net-stat-value";
             val.textContent = formatNum(agg.storage);
@@ -1226,8 +1224,9 @@
     }
 
     /** Fetch each member's history, extract values per role, forward-fill missing points,
-     *  and aggregate by timestamp into 3 series: production (总应力), consumption (应力),
-     *  surplus (剩余应力). Returns [{label, points:[{ts, value}]}, ...] (only series with >= 2 points). */
+     *  and aggregate by timestamp into series: production (总应力), consumption (应力),
+     *  storage (剩余应力). surplus 不再单独成线——剩余应力即存储，由 storage 成员实测值代表。
+     *  Returns [{label, points:[{ts, value}]}, ...] (only series with >= 2 points). */
     async function buildNetworkSeries(net) {
         const members = net.members || [];
         if (members.length === 0) return [];
@@ -1289,26 +1288,13 @@
         const series = [];
         if (prodPts.length >= 2) series.push({ label: STRESS_LABELS.total, points: prodPts });
         if (consPts.length >= 2) series.push({ label: STRESS_LABELS.used, points: consPts });
-        // Surplus = production - consumption, computed at each common timestamp.
-        if (prodPts.length >= 2 || consPts.length >= 2) {
-            const surplusPts = [];
-            const prodMap = new Map(prodPts.map((p) => [p.ts, p.value]));
-            const consMap = new Map(consPts.map((p) => [p.ts, p.value]));
-            // Union of prod/cons timestamps (both share the same set in our construction).
-            const unionTs = new Set([...prodMap.keys(), ...consMap.keys()]);
-            Array.from(unionTs).sort((a, b) => a - b).forEach((ts) => {
-                const p = prodMap.has(ts) ? prodMap.get(ts) : 0;
-                const c = consMap.has(ts) ? consMap.get(ts) : 0;
-                surplusPts.push({ ts, value: p - c });
-            });
-            if (surplusPts.length >= 2) series.push({ label: STRESS_LABELS.remaining, points: surplusPts });
-        }
-        if (storPts.length >= 2) series.push({ label: STRESS_LABELS.storage, points: storPts });
+        // 剩余应力 = storage 成员实测累加（不再用 surplus=产−消 派生线）。
+        if (storPts.length >= 2) series.push({ label: STRESS_LABELS.remaining, points: storPts });
         return series;
     }
 
-    /** Fixed palette for the network trend chart so colors are stable: green=production,
-     *  orange=consumption, blue=surplus, then fall back to the standard palette. */
+    /** Fixed palette for the network trend chart so colors are stable: green=总应力,
+     *  orange=应力, blue=剩余应力(storage), then fall back to the standard palette. */
     function networkChartColor(i) {
         const palette = ["#4ec9b0", "#FAA21B", "#5aa9ff", "#c084fc", "#f48771", "#facc15"];
         return palette[i % palette.length];
