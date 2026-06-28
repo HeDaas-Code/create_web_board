@@ -8,6 +8,10 @@ modId = "create_web_board"
 version = "${version}"
 displayName = "Create Web Board"
 authors = "hedaas"
+# Server-required, client-optional: clients without this mod can still connect.
+# IGNORE_SERVER_VERSION lets the client skip the server's mod version check, so
+# no "mod mismatch" disconnect is triggered when the client doesn't have it.
+displayTest = "IGNORE_SERVER_VERSION"
 description = '''
 Adds a "Web" toggle to every Display Link. When enabled, the link's live output is
 mirrored to a local browser dashboard in real time. This file is generated from
