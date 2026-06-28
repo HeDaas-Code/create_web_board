@@ -51,6 +51,9 @@
         itemThumbs: $("modal-item-thumbs"),
         // Group toggle
         groupToggle: $("group-toggle"),
+        // View toggle (看板/网络) + new network button
+        viewToggle: $("view-toggle"),
+        newNetworkBtn: $("new-network-btn"),
         // Item picker modal
         itemPicker: $("item-picker"),
         itemPickerClose: $("item-picker-close"),
@@ -59,6 +62,34 @@
         itemPickerCount: $("item-picker-selected-count"),
         itemPickerClear: $("item-picker-clear"),
         itemPickerConfirm: $("item-picker-confirm"),
+        // Network detail modal
+        networkModal: $("network-modal"),
+        networkModalTitle: $("network-modal-title"),
+        networkModalClose: $("network-modal-close"),
+        networkNameInput: $("network-name-input"),
+        networkSaveName: $("network-save-name"),
+        networkModalStats: $("network-modal-stats"),
+        networkModalChart: $("network-modal-chart"),
+        networkModalChartMeta: $("network-modal-chart-meta"),
+        networkModalMembers: $("network-modal-members"),
+        networkModalMemberCount: $("network-modal-member-count"),
+        networkModalFootMeta: $("network-modal-foot-meta"),
+        networkEditBtn: $("network-edit"),
+        networkDeleteBtn: $("network-delete"),
+        // Network editor modal
+        networkEditor: $("network-editor"),
+        networkEditorTitle: $("network-editor-title"),
+        networkEditorClose: $("network-editor-close"),
+        networkEditorName: $("network-editor-name"),
+        networkEditorCount: $("network-editor-count"),
+        networkEditorMembers: $("network-editor-members"),
+        networkEditorAdd: $("network-editor-add"),
+        networkEditorCancel: $("network-editor-cancel"),
+        networkEditorSave: $("network-editor-save"),
+        // Board picker modal
+        boardPicker: $("board-picker"),
+        boardPickerClose: $("board-picker-close"),
+        boardPickerList: $("board-picker-list"),
     };
 
     const state = {
@@ -70,6 +101,11 @@
         modalName: null,      // stable key of the board currently shown in the modal (null = closed)
         grouped: true,        // cluster cards by tag on the main grid
         itemPickerSelected: null, // Set<String> of item ids pending confirmation (null = picker closed)
+        // Stress network feature
+        networks: new Map(),  // id -> {id, name, members:[{boardName, role, label, lineIndex}]}
+        viewMode: "boards",   // "boards" | "networks"
+        networkModalId: null, // id of the network currently shown in the detail modal (null = closed)
+        networkEditorState: null, // {id?, name, members:[{boardName, role, label, lineIndex}]} (null = closed)
     };
 
     // ---------- WebSocket ----------
@@ -118,17 +154,20 @@
                 });
                 render();
                 refreshModalIfOpen();
+                refreshNetworkModalIfOpen();
                 break;
             case "update":
                 msg.board._seenAt = Date.now();
                 state.boards.set(msg.board.name, msg.board);
                 render();
                 refreshModalIfOpen();
+                refreshNetworkModalIfOpen();
                 break;
             case "remove":
                 state.boards.delete(msg.name);
                 if (state.modalName === msg.name) closeModal();
                 render();
+                refreshNetworkModalIfOpen();
                 break;
             default:
                 // unknown — ignore
@@ -181,6 +220,7 @@
             }
             // Keep an open modal in sync even when WS is down (REST is the only source then).
             refreshModalIfOpen();
+            refreshNetworkModalIfOpen();
         } catch (_) { /* offline; WS will heal */ }
     }
 
@@ -191,6 +231,43 @@
             const h = await r.json();
             els.wsCount.textContent = String(h.wsConnections || 0);
         } catch (_) { /* ignore */ }
+    }
+
+    // ---------- Stress networks (REST) ----------
+
+    /** Fetch the list of stress networks. Polled every 5s (alongside fetchAll) so live
+     *  aggregates stay fresh even without a WS push for networks. */
+    async function fetchNetworks() {
+        try {
+            const r = await fetch("/api/networks");
+            if (!r.ok) return;
+            const list = await r.json();
+            const next = new Map();
+            (list || []).forEach((n) => next.set(n.id, n));
+            state.networks = next;
+            // Re-render the grid if we're in network view; also keep an open modal in sync.
+            if (state.viewMode === "networks") render();
+            refreshNetworkModalIfOpen();
+        } catch (_) { /* offline; WS/next poll will heal */ }
+    }
+
+    /** If the network detail modal is open, refresh its live fields from current state. */
+    function refreshNetworkModalIfOpen() {
+        if (!state.networkModalId) return;
+        const net = state.networks.get(state.networkModalId);
+        if (net) {
+            // Preserve any text the user is currently typing in the name field.
+            const focused = document.activeElement === els.networkNameInput;
+            const draft = els.networkNameInput.value;
+            renderNetworkModalLive(net);
+            if (focused) {
+                els.networkNameInput.focus();
+                els.networkNameInput.value = draft;
+            }
+        } else {
+            // Network was deleted out-of-band (e.g. another tab); close the modal.
+            closeNetworkModal();
+        }
     }
 
     // ---------- Rendering ----------
@@ -209,6 +286,12 @@
     }
 
     function render() {
+        // Network view: render network cards instead of board cards.
+        if (state.viewMode === "networks") {
+            renderNetworks();
+            return;
+        }
+
         const all = Array.from(state.boards.values()).slice()
                 .sort((a, b) => displayTitle(a).localeCompare(displayTitle(b)));
         const visible = all.filter(matchesFilter);
@@ -400,6 +483,204 @@
         return card;
     }
 
+    // ---------- Stress network: value extraction & aggregation ----------
+
+    /** Extract the first parseable number from a board's line at the given index.
+     *  Reuses the existing NUM_RE so backend/frontend extraction stays in sync. */
+    function extractBoardValue(board, lineIndex) {
+        if (!board || !board.lines || board.lines.length === 0) return null;
+        const idx = Math.min(lineIndex || 0, board.lines.length - 1);
+        const m = board.lines[idx].match(NUM_RE);
+        return m ? parseFloat(m[0]) : null;
+    }
+
+    /** Role display label in Chinese. */
+    const ROLE_LABELS = { producer: "产生", consumer: "消耗", storage: "存储" };
+
+    /** Aggregate a network's current values from its member boards. Returns
+     *  {production, consumption, storage, surplus, activeMembers, memberValues}. */
+    function computeNetworkAggregate(net) {
+        let production = 0, consumption = 0, storage = 0, activeMembers = 0;
+        const memberValues = [];
+        (net.members || []).forEach((m) => {
+            const board = state.boards.get(m.boardName);
+            const stale = !board || board.stale || (!board._seenAt || Date.now() - board._seenAt > 30000);
+            const value = extractBoardValue(board, m.lineIndex);
+            if (!stale) activeMembers++;
+            memberValues.push({ member: m, board, stale, value });
+            if (value == null) return;
+            if (m.role === "producer") production += value;
+            else if (m.role === "consumer") consumption += value;
+            else if (m.role === "storage") storage += value;
+        });
+        const surplus = production - consumption;
+        return { production, consumption, storage, surplus, activeMembers, memberValues };
+    }
+
+    // ---------- Stress network: grid rendering ----------
+
+    /** Render the network grid (replaces the board grid when viewMode === "networks"). */
+    function renderNetworks() {
+        // Toggle the "新建网络" button visibility — only relevant in network view.
+        els.newNetworkBtn.hidden = false;
+
+        const all = Array.from(state.networks.values()).slice()
+                .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+        const visible = all.filter(matchesNetworkFilter);
+
+        els.boardCount.textContent = String(all.length);
+
+        if (visible.length === 0) {
+            els.boardGrid.innerHTML = "";
+            els.boardGrid.classList.remove("grouped");
+            els.emptyState.hidden = false;
+            // Repurpose the empty-state copy briefly for the network view.
+            return;
+        }
+        els.emptyState.hidden = true;
+
+        els.boardGrid.innerHTML = "";
+        els.boardGrid.classList.remove("grouped");
+        const frag = document.createDocumentFragment();
+        visible.forEach((net) => frag.appendChild(renderNetworkCard(net)));
+        els.boardGrid.appendChild(frag);
+    }
+
+    function matchesNetworkFilter(net) {
+        if (!state.filter) return true;
+        const name = (net.name || "").toLowerCase();
+        if (name.includes(state.filter)) return true;
+        // Also match against member board names / labels.
+        return (net.members || []).some((m) => {
+            const board = state.boards.get(m.boardName);
+            const disp = board ? displayTitle(board).toLowerCase() : m.boardName.toLowerCase();
+            return disp.includes(state.filter) || (m.label || "").toLowerCase().includes(state.filter);
+        });
+    }
+
+    /** Render a single network card. Reuses the .card base; adds stats + member list. */
+    function renderNetworkCard(net) {
+        const card = document.createElement("article");
+        card.className = "card net-card";
+        card.dataset.id = net.id;
+        card.tabIndex = 0;
+        card.setAttribute("role", "button");
+        card.setAttribute("aria-label", "打开网络详情: " + (net.name || ""));
+
+        const agg = computeNetworkAggregate(net);
+        const anyLive = agg.activeMembers > 0;
+
+        card.addEventListener("click", () => openNetworkModal(net.id));
+        card.addEventListener("keydown", (ev) => {
+            if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openNetworkModal(net.id); }
+        });
+
+        // Header: title + live badge
+        const head = document.createElement("header");
+        head.className = "card-head";
+        const title = document.createElement("h3");
+        title.className = "card-title";
+        title.textContent = net.name || "（未命名网络）";
+        title.title = net.name || "";
+        const live = document.createElement("span");
+        live.className = "card-live";
+        if (anyLive) {
+            live.innerHTML = '<span class="live-dot"></span>live';
+        } else {
+            live.innerHTML = '<span class="live-dot"></span>离线';
+            card.classList.add("card-offline");
+        }
+        head.appendChild(title);
+        head.appendChild(live);
+        card.appendChild(head);
+
+        // Stats: 产生 / 消耗 / 盈余 (and 存储 row if there are storage members)
+        const stats = document.createElement("div");
+        stats.className = "net-stats" + (agg.storage !== 0 || (net.members || []).some((m) => m.role === "storage") ? " with-storage" : "");
+        stats.appendChild(renderNetStat("产生", agg.production, "produce"));
+        stats.appendChild(renderNetStat("消耗", agg.consumption, "consume"));
+        const surplusCls = "surplus " + (agg.surplus >= 0 ? "pos" : "neg");
+        stats.appendChild(renderNetStat("盈余", agg.surplus, surplusCls));
+        if ((net.members || []).some((m) => m.role === "storage")) {
+            const row = document.createElement("div");
+            row.className = "net-storage-row";
+            const lab = document.createElement("span");
+            lab.className = "net-stat-label";
+            lab.textContent = "存储";
+            const val = document.createElement("span");
+            val.className = "net-stat-value";
+            val.textContent = formatNum(agg.storage);
+            row.appendChild(lab);
+            row.appendChild(val);
+            stats.appendChild(row);
+        }
+        card.appendChild(stats);
+
+        // Member list
+        const members = document.createElement("div");
+        members.className = "net-members";
+        if (agg.memberValues.length === 0) {
+            const empty = document.createElement("div");
+            empty.className = "net-editor-empty";
+            empty.textContent = "（暂无成员）";
+            members.appendChild(empty);
+        } else {
+            agg.memberValues.forEach((mv) => members.appendChild(renderNetMemberRow(mv)));
+        }
+        card.appendChild(members);
+
+        // Footer: member count + last update time (latest member update)
+        const foot = document.createElement("footer");
+        foot.className = "net-card-foot";
+        const count = (net.members || []).length;
+        foot.textContent = count + (count === 1 ? " 个成员" : " 个成员");
+        const time = document.createElement("span");
+        time.className = "foot-time";
+        let latest = 0;
+        agg.memberValues.forEach((mv) => { if (mv.board && mv.board.lastUpdatedMs > latest) latest = mv.board.lastUpdatedMs; });
+        time.textContent = latest ? formatTime(latest) : "—";
+        time.title = "最后更新";
+        foot.appendChild(time);
+        card.appendChild(foot);
+        return card;
+    }
+
+    function renderNetStat(label, value, cls) {
+        const stat = document.createElement("div");
+        stat.className = "net-stat " + cls;
+        const lab = document.createElement("span");
+        lab.className = "net-stat-label";
+        lab.textContent = label;
+        const val = document.createElement("span");
+        val.className = "net-stat-value";
+        val.textContent = formatNum(value);
+        stat.appendChild(lab);
+        stat.appendChild(val);
+        return stat;
+    }
+
+    function renderNetMemberRow(mv) {
+        const row = document.createElement("div");
+        row.className = "net-member";
+        const dot = document.createElement("span");
+        dot.className = "member-dot role-" + (mv.member.role || "producer");
+        const name = document.createElement("span");
+        name.className = "member-name";
+        name.textContent = mv.member.label || (mv.board ? displayTitle(mv.board) : mv.member.boardName);
+        name.title = mv.member.boardName;
+        const badge = document.createElement("span");
+        badge.className = "role-badge role-" + (mv.member.role || "producer");
+        badge.textContent = ROLE_LABELS[mv.member.role] || mv.member.role;
+        const val = document.createElement("span");
+        val.className = "member-value" + (mv.stale ? " stale" : "");
+        val.textContent = mv.value == null ? "—" : formatNum(mv.value);
+        row.appendChild(dot);
+        row.appendChild(name);
+        row.appendChild(badge);
+        row.appendChild(val);
+        return row;
+    }
+
     // ---------- Modal ----------
 
     /** The name to display for a board: user-set displayName if present, else the stable key. */
@@ -488,7 +769,7 @@
         const series = buildNumericSeries(list);
 
         if (series.length > 0) {
-            frag.appendChild(renderChart(series));
+            frag.appendChild(renderChart(series, { showMean: true, showRate: true, showAnomalies: true }));
         } else {
             const noChart = document.createElement("div");
             noChart.className = "hist-empty";
@@ -567,7 +848,7 @@
     }
 
     /** Build the legend + SVG line chart for the given series. */
-    function renderChart(series) {
+    function renderChart(series, opts) {
         const wrap = document.createElement("div");
         wrap.className = "hist-chart-wrap";
 
@@ -579,7 +860,7 @@
             item.title = s.label;
             const sw = document.createElement("span");
             sw.className = "legend-swatch";
-            sw.style.background = chartColor(idx);
+            sw.style.background = (opts && opts.colors && opts.colors[idx]) || chartColor(idx);
             const label = document.createElement("span");
             label.className = "legend-label";
             label.textContent = s.label;
@@ -589,12 +870,17 @@
         });
         wrap.appendChild(legend);
 
-        wrap.appendChild(renderChartSvg(series));
+        wrap.appendChild(renderChartSvg(series, opts));
         return wrap;
     }
 
-    /** Hand-drawn SVG line chart. viewBox is fixed; CSS scales it to container width. */
-    function renderChartSvg(series) {
+    /** Hand-drawn SVG line chart. viewBox is fixed; CSS scales it to container width.
+     *  opts = {showMean, showRate, showAnomalies, colors}. Returns a wrapper div containing
+     *  the SVG (and a rate-of-change annotation below it when showRate is set). */
+    function renderChartSvg(series, opts) {
+        opts = opts || {};
+        const colorFor = (idx) => (opts.colors && opts.colors[idx]) || chartColor(idx);
+
         const W = 800, H = 260;
         const padL = 52, padR = 14, padT = 14, padB = 32;
         const plotW = W - padL - padR;
@@ -639,24 +925,91 @@
         parts.push('<line class="chart-axis" x1="' + padL + '" y1="' + (H - padB) +
             '" x2="' + (W - padR) + '" y2="' + (H - padB) + '"/>');
 
+        // Mean line: horizontal dashed line at the average of the FIRST series, with a label.
+        if (opts.showMean && series.length > 0 && series[0].points.length > 0) {
+            const pts0 = series[0].points;
+            const meanValue = pts0.reduce((a, p) => a + p.value, 0) / pts0.length;
+            const yMean = yOf(meanValue);
+            const yc = Math.max(padT, Math.min(H - padB, yMean));
+            const meanColor = colorFor(0);
+            parts.push('<line class="chart-mean-line" x1="' + padL + '" y1="' + yc +
+                '" x2="' + (W - padR) + '" y2="' + yc + '" stroke="' + meanColor + '"/>');
+            parts.push('<text class="chart-mean-label" x="' + (W - padR - 4) + '" y="' + (yc - 4) +
+                '" text-anchor="end" fill="' + meanColor + '">均值: ' + formatNum(meanValue) + '</text>');
+        }
+
         // Series polylines + points (with native <title> tooltips on hover)
         series.forEach((s, idx) => {
-            const color = chartColor(idx);
+            const color = colorFor(idx);
             const pts = s.points.map((p) => xOf(p.ts) + "," + yOf(p.value)).join(" ");
             parts.push('<polyline class="chart-line" points="' + pts +
                 '" fill="none" stroke="' + color + '"/>');
-            s.points.forEach((p) => {
-                parts.push('<circle class="chart-point" cx="' + xOf(p.ts) + '" cy="' + yOf(p.value) +
-                    '" r="3" fill="' + color + '"><title>' +
-                    escapeHtml(s.label) + " · " + formatTime(p.ts) + " · " + formatNum(p.value) +
-                    "</title></circle>");
+
+            // Anomaly detection: for series with >= 6 points, compute per-step deltas and
+            // flag points where |delta - meanDelta| > 2*stdDev. Drawn as larger red-ringed dots.
+            const anomalyIdx = new Set();
+            if (opts.showAnomalies && s.points.length >= 6) {
+                const deltas = [];
+                for (let i = 1; i < s.points.length; i++) {
+                    deltas.push(s.points[i].value - s.points[i - 1].value);
+                }
+                const meanDelta = deltas.reduce((a, d) => a + d, 0) / deltas.length;
+                const variance = deltas.reduce((a, d) => a + (d - meanDelta) * (d - meanDelta), 0) / deltas.length;
+                const stdDev = Math.sqrt(variance);
+                const threshold = 2 * stdDev;
+                for (let i = 0; i < deltas.length; i++) {
+                    if (Math.abs(deltas[i] - meanDelta) > threshold) {
+                        anomalyIdx.add(i + 1); // mark the point where the anomalous delta arrives
+                    }
+                }
+            }
+
+            s.points.forEach((p, pi) => {
+                if (anomalyIdx.has(pi)) {
+                    parts.push('<circle class="chart-point chart-anomaly" cx="' + xOf(p.ts) + '" cy="' + yOf(p.value) +
+                        '" r="5" fill="' + color + '"><title>' +
+                        escapeHtml(s.label) + " · " + formatTime(p.ts) + " · " + formatNum(p.value) + " · 异常" +
+                        "</title></circle>");
+                } else {
+                    parts.push('<circle class="chart-point" cx="' + xOf(p.ts) + '" cy="' + yOf(p.value) +
+                        '" r="3" fill="' + color + '"><title>' +
+                        escapeHtml(s.label) + " · " + formatTime(p.ts) + " · " + formatNum(p.value) +
+                        "</title></circle>");
+                }
             });
         });
 
         parts.push("</svg>");
-        const div = document.createElement("div");
-        div.innerHTML = parts.join("");
-        return div.firstElementChild;
+        const svgHolder = document.createElement("div");
+        svgHolder.innerHTML = parts.join("");
+        const svgEl = svgHolder.firstElementChild;
+
+        // Rate of change annotation (HTML, below the SVG) — computed from the first series:
+        // (lastValue - firstValue) / timeSpanSeconds.
+        const wrap = document.createElement("div");
+        wrap.appendChild(svgEl);
+        if (opts.showRate && series.length > 0 && series[0].points.length >= 2) {
+            const s0 = series[0];
+            const first = s0.points[0], last = s0.points[s0.points.length - 1];
+            const dtSec = (last.ts - first.ts) / 1000;
+            let rateText, rateCls;
+            if (dtSec <= 0) {
+                rateText = "变化率: —";
+                rateCls = "rate-flat";
+            } else {
+                const rate = (last.value - first.value) / dtSec;
+                rateText = "变化率: " + (rate > 0 ? "+" : "") + formatNum(rate) + "/s";
+                rateCls = rate > 0 ? "rate-up" : (rate < 0 ? "rate-down" : "rate-flat");
+            }
+            const ann = document.createElement("div");
+            ann.className = "chart-rate-annotation";
+            const span = document.createElement("span");
+            span.className = rateCls;
+            span.textContent = rateText;
+            ann.appendChild(span);
+            wrap.appendChild(ann);
+        }
+        return wrap;
     }
 
     /** Collapsible raw snapshot list (newest-first), kept as a fallback detail view. */
@@ -752,6 +1105,248 @@
             }
         } catch (_) { /* ignore */ } finally {
             els.deleteBtn.disabled = false;
+        }
+    }
+
+    // ---------- Stress network: detail modal ----------
+
+    function openNetworkModal(id) {
+        const net = state.networks.get(id);
+        if (!net) return;
+        state.networkModalId = id;
+        renderNetworkModal(net);
+        els.networkModal.hidden = false;
+        loadNetworkChart(net);
+        setTimeout(() => els.networkNameInput.focus(), 0);
+    }
+
+    function closeNetworkModal() {
+        state.networkModalId = null;
+        els.networkModal.hidden = true;
+        els.networkModalChart.innerHTML = "";
+    }
+
+    /** Full render on open. */
+    function renderNetworkModal(net) {
+        els.networkModalTitle.textContent = net.name || "（未命名网络）";
+        els.networkNameInput.value = net.name || "";
+        renderNetworkModalLive(net);
+    }
+
+    /** Re-render the live fields (stats + members + foot meta) from current board state.
+     *  Called on open and on every WS/REST update. Preserves the name input draft. */
+    function renderNetworkModalLive(net) {
+        const agg = computeNetworkAggregate(net);
+
+        // Stats
+        els.networkModalStats.innerHTML = "";
+        els.networkModalStats.appendChild(renderNetStat("产生", agg.production, "produce"));
+        els.networkModalStats.appendChild(renderNetStat("消耗", agg.consumption, "consume"));
+        const surplusCls = "surplus " + (agg.surplus >= 0 ? "pos" : "neg");
+        els.networkModalStats.appendChild(renderNetStat("盈余", agg.surplus, surplusCls));
+        if ((net.members || []).some((m) => m.role === "storage")) {
+            const row = document.createElement("div");
+            row.className = "net-storage-row";
+            const lab = document.createElement("span");
+            lab.className = "net-stat-label";
+            lab.textContent = "存储";
+            const val = document.createElement("span");
+            val.className = "net-stat-value";
+            val.textContent = formatNum(agg.storage);
+            row.appendChild(lab);
+            row.appendChild(val);
+            els.networkModalStats.appendChild(row);
+        }
+
+        // Members
+        els.networkModalMembers.innerHTML = "";
+        els.networkModalMemberCount.textContent = (net.members || []).length + " 个成员";
+        if (agg.memberValues.length === 0) {
+            const empty = document.createElement("div");
+            empty.className = "net-editor-empty";
+            empty.textContent = "（暂无成员）";
+            els.networkModalMembers.appendChild(empty);
+        } else {
+            agg.memberValues.forEach((mv) => els.networkModalMembers.appendChild(renderNetMemberRow(mv)));
+        }
+
+        // Foot meta
+        let latest = 0;
+        agg.memberValues.forEach((mv) => { if (mv.board && mv.board.lastUpdatedMs > latest) latest = mv.board.lastUpdatedMs; });
+        els.networkModalFootMeta.textContent = (agg.activeMembers > 0 ? "在线" : "离线") +
+            "  ·  " + (net.members || []).length + " 成员  ·  更新于 " + (latest ? formatTime(latest) : "—");
+    }
+
+    async function loadNetworkChart(net) {
+        els.networkModalChart.innerHTML = '<div class="hist-empty">加载中…</div>';
+        els.networkModalChartMeta.textContent = "";
+        try {
+            const series = await buildNetworkSeries(net);
+            if (series.length === 0) {
+                els.networkModalChart.innerHTML = '<div class="hist-empty">（暂无可绘制的趋势数据）</div>';
+                return;
+            }
+            const wrap = document.createElement("div");
+            wrap.className = "hist-chart-wrap";
+            const legend = document.createElement("div");
+            legend.className = "chart-legend";
+            series.forEach((s, idx) => {
+                const item = document.createElement("span");
+                item.className = "legend-item";
+                item.title = s.label;
+                const sw = document.createElement("span");
+                sw.className = "legend-swatch";
+                sw.style.background = networkChartColor(idx);
+                const label = document.createElement("span");
+                label.className = "legend-label";
+                label.textContent = s.label;
+                item.appendChild(sw);
+                item.appendChild(label);
+                legend.appendChild(item);
+            });
+            wrap.appendChild(legend);
+            const opts = { showMean: true, showRate: true, showAnomalies: true, colors: series.map((_, i) => networkChartColor(i)) };
+            wrap.appendChild(renderChartSvg(series, opts));
+            els.networkModalChart.innerHTML = "";
+            els.networkModalChart.appendChild(wrap);
+            const totalPoints = series.reduce((n, s) => n + s.points.length, 0);
+            els.networkModalChartMeta.textContent = totalPoints + " 点";
+        } catch (_) {
+            els.networkModalChart.innerHTML = '<div class="hist-empty">加载失败</div>';
+        }
+    }
+
+    /** Fetch each member's history, extract values per role, forward-fill missing points,
+     *  and aggregate by timestamp into 3 series: production (产生), consumption (消耗), surplus (盈余).
+     *  Returns [{label, points:[{ts, value}]}, ...] (only series with >= 2 points). */
+    async function buildNetworkSeries(net) {
+        const members = net.members || [];
+        if (members.length === 0) return [];
+
+        // Fetch all member histories in parallel.
+        const results = await Promise.all(members.map(async (m) => {
+            try {
+                const r = await fetch("/api/boards/" + encodeURIComponent(m.boardName) + "/history");
+                if (!r.ok) return { member: m, history: [] };
+                const list = await r.json();
+                return { member: m, history: list || [] };
+            } catch (_) {
+                return { member: m, history: [] };
+            }
+        }));
+
+        // Collect the union of all timestamps across all member histories.
+        const tsSet = new Set();
+        results.forEach(({ history }) => {
+            history.forEach((he) => { if (he && he.ts != null) tsSet.add(he.ts); });
+        });
+        const timestamps = Array.from(tsSet).sort((a, b) => a - b);
+        if (timestamps.length < 2) return [];
+
+        // For each member, build a ts -> value map (extracted via extractBoardValue).
+        // Then for each timestamp, forward-fill the member's value (use last known).
+        const memberSeries = results.map(({ member, history }) => {
+            const map = new Map(); // ts -> value
+            history.forEach((he) => {
+                const v = extractBoardValue({ lines: he.lines }, member.lineIndex);
+                if (v != null) map.set(he.ts, v);
+            });
+            return { member, map };
+        });
+
+        // Walk timestamps in order, forward-filling each member's value.
+        const lastVals = memberSeries.map(() => null);
+        const prodPts = [], consPts = [], storPts = [];
+        timestamps.forEach((ts, ti) => {
+            let prod = 0, cons = 0, stor = 0;
+            let prodKnown = false, consKnown = false, storKnown = false;
+            memberSeries.forEach((ms, i) => {
+                if (ms.map.has(ts)) lastVals[i] = ms.map.get(ts);
+                const v = lastVals[i];
+                if (v == null) return;
+                if (ms.member.role === "producer") { prod += v; prodKnown = true; }
+                else if (ms.member.role === "consumer") { cons += v; consKnown = true; }
+                else if (ms.member.role === "storage") { stor += v; storKnown = true; }
+            });
+            // Only emit a point once at least one contributing member has been seen.
+            // (Avoids a flat zero ramp before the first real sample.)
+            if (prodKnown || consKnown) {
+                prodPts.push({ ts, value: prod });
+                consPts.push({ ts, value: cons });
+            }
+            if (storKnown) storPts.push({ ts, value: stor });
+        });
+
+        const series = [];
+        if (prodPts.length >= 2) series.push({ label: "产生", points: prodPts });
+        if (consPts.length >= 2) series.push({ label: "消耗", points: consPts });
+        // Surplus = production - consumption, computed at each common timestamp.
+        if (prodPts.length >= 2 || consPts.length >= 2) {
+            const surplusPts = [];
+            const prodMap = new Map(prodPts.map((p) => [p.ts, p.value]));
+            const consMap = new Map(consPts.map((p) => [p.ts, p.value]));
+            // Union of prod/cons timestamps (both share the same set in our construction).
+            const unionTs = new Set([...prodMap.keys(), ...consMap.keys()]);
+            Array.from(unionTs).sort((a, b) => a - b).forEach((ts) => {
+                const p = prodMap.has(ts) ? prodMap.get(ts) : 0;
+                const c = consMap.has(ts) ? consMap.get(ts) : 0;
+                surplusPts.push({ ts, value: p - c });
+            });
+            if (surplusPts.length >= 2) series.push({ label: "盈余", points: surplusPts });
+        }
+        if (storPts.length >= 2) series.push({ label: "存储", points: storPts });
+        return series;
+    }
+
+    /** Fixed palette for the network trend chart so colors are stable: green=production,
+     *  orange=consumption, blue=surplus, then fall back to the standard palette. */
+    function networkChartColor(i) {
+        const palette = ["#4ec9b0", "#FAA21B", "#5aa9ff", "#c084fc", "#f48771", "#facc15"];
+        return palette[i % palette.length];
+    }
+
+    async function saveNetworkName() {
+        const id = state.networkModalId;
+        if (!id) return;
+        const net = state.networks.get(id);
+        if (!net) return;
+        const value = els.networkNameInput.value.trim();
+        els.networkSaveName.disabled = true;
+        try {
+            const body = JSON.stringify({ name: value, members: net.members || [] });
+            const r = await fetch("/api/networks/" + encodeURIComponent(id), {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: body,
+            });
+            if (r.ok) {
+                net.name = value;
+                state.networks.set(id, net);
+                render();
+                renderNetworkModal(net);
+                await fetchNetworks();
+            }
+        } catch (_) { /* ignore */ } finally {
+            els.networkSaveName.disabled = false;
+        }
+    }
+
+    async function deleteNetwork() {
+        const id = state.networkModalId;
+        if (!id) return;
+        const net = state.networks.get(id);
+        const name = net ? (net.name || "（未命名网络）") : "此网络";
+        if (!window.confirm("确认删除网络「" + name + "」？此操作不可撤销。")) return;
+        els.networkDeleteBtn.disabled = true;
+        try {
+            const r = await fetch("/api/networks/" + encodeURIComponent(id), { method: "DELETE" });
+            if (r.ok) {
+                state.networks.delete(id);
+                closeNetworkModal();
+                await fetchNetworks();
+            }
+        } catch (_) { /* ignore */ } finally {
+            els.networkDeleteBtn.disabled = false;
         }
     }
 
@@ -1054,6 +1649,237 @@
         await saveItems(itemIds);
     }
 
+    // ---------- Stress network: editor (modal-over-modal) ----------
+
+    /** Open the editor. Pass an existing net to edit it, or omit to create a new one. */
+    function openNetworkEditor(net) {
+        if (net) {
+            state.networkEditorState = {
+                id: net.id,
+                name: net.name || "",
+                members: (net.members || []).map((m) => ({
+                    boardName: m.boardName,
+                    role: m.role || "producer",
+                    label: m.label || "",
+                    lineIndex: m.lineIndex || 0,
+                })),
+            };
+            els.networkEditorTitle.textContent = "编辑网络";
+        } else {
+            state.networkEditorState = {
+                name: "",
+                members: [],
+            };
+            els.networkEditorTitle.textContent = "新建网络";
+        }
+        els.networkEditorName.value = state.networkEditorState.name;
+        renderNetworkEditor();
+        els.networkEditor.hidden = false;
+        setTimeout(() => els.networkEditorName.focus(), 0);
+    }
+
+    function closeNetworkEditor() {
+        state.networkEditorState = null;
+        els.networkEditor.hidden = true;
+        // Also dismiss the board picker if it was open on top.
+        if (!els.boardPicker.hidden) closeBoardPicker();
+    }
+
+    /** Render the editor member list from state.networkEditorState. Each row lets the user
+     *  edit the role / label / lineIndex for a member board. */
+    function renderNetworkEditor() {
+        const st = state.networkEditorState;
+        if (!st) return;
+        els.networkEditorCount.textContent = st.members.length + " 个成员";
+        els.networkEditorMembers.innerHTML = "";
+        if (st.members.length === 0) {
+            const empty = document.createElement("div");
+            empty.className = "net-editor-empty";
+            empty.textContent = "（暂无成员，点击「添加看板」选择）";
+            els.networkEditorMembers.appendChild(empty);
+            return;
+        }
+        st.members.forEach((m, idx) => {
+            els.networkEditorMembers.appendChild(renderEditorMemberRow(m, idx));
+        });
+    }
+
+    function renderEditorMemberRow(m, idx) {
+        const board = state.boards.get(m.boardName);
+        const dispName = board ? displayTitle(board) : m.boardName;
+        const row = document.createElement("div");
+        row.className = "net-member";
+
+        const inner = document.createElement("div");
+        inner.className = "net-member-editor-row";
+
+        const dot = document.createElement("span");
+        dot.className = "member-dot role-" + (m.role || "producer");
+
+        const boardName = document.createElement("span");
+        boardName.className = "net-member-board";
+        boardName.textContent = dispName;
+        boardName.title = m.boardName;
+
+        const roleSel = document.createElement("select");
+        roleSel.className = "net-member-role";
+        roleSel.innerHTML = '<option value="producer">产生</option>' +
+            '<option value="consumer">消耗</option>' +
+            '<option value="storage">存储</option>';
+        roleSel.value = m.role || "producer";
+        roleSel.addEventListener("change", () => {
+            const st = state.networkEditorState;
+            if (!st) return;
+            st.members[idx].role = roleSel.value;
+            dot.className = "member-dot role-" + (roleSel.value || "producer");
+        });
+
+        const labelInput = document.createElement("input");
+        labelInput.className = "net-member-label-input";
+        labelInput.type = "text";
+        labelInput.placeholder = "标签（可选）";
+        labelInput.value = m.label || "";
+        labelInput.maxLength = 32;
+        labelInput.addEventListener("input", () => {
+            const st = state.networkEditorState;
+            if (!st) return;
+            st.members[idx].label = labelInput.value;
+        });
+
+        const lineInput = document.createElement("input");
+        lineInput.className = "net-member-line-input";
+        lineInput.type = "number";
+        lineInput.min = "0";
+        lineInput.step = "1";
+        lineInput.placeholder = "行";
+        lineInput.title = "提取看板第几行的数值（从 0 开始）";
+        lineInput.value = String(m.lineIndex || 0);
+        lineInput.addEventListener("input", () => {
+            const st = state.networkEditorState;
+            if (!st) return;
+            const v = parseInt(lineInput.value, 10);
+            st.members[idx].lineIndex = isNaN(v) || v < 0 ? 0 : v;
+        });
+
+        const rm = document.createElement("button");
+        rm.className = "net-member-remove";
+        rm.textContent = "×";
+        rm.title = "移除成员";
+        rm.setAttribute("aria-label", "移除成员 " + dispName);
+        rm.addEventListener("click", () => {
+            const st = state.networkEditorState;
+            if (!st) return;
+            st.members.splice(idx, 1);
+            renderNetworkEditor();
+        });
+
+        inner.appendChild(dot);
+        inner.appendChild(boardName);
+        inner.appendChild(roleSel);
+        inner.appendChild(labelInput);
+        inner.appendChild(lineInput);
+        inner.appendChild(rm);
+        row.appendChild(inner);
+        return row;
+    }
+
+    async function saveNetwork() {
+        const st = state.networkEditorState;
+        if (!st) return;
+        const name = els.networkEditorName.value.trim();
+        if (!name) {
+            els.networkEditorName.focus();
+            return;
+        }
+        // Sanitize members: drop any with empty boardName; coerce types.
+        const members = st.members
+            .filter((m) => m && m.boardName)
+            .map((m) => ({
+                boardName: m.boardName,
+                role: (m.role === "consumer" || m.role === "storage") ? m.role : "producer",
+                label: m.label || "",
+                lineIndex: Math.max(0, parseInt(m.lineIndex, 10) || 0),
+            }));
+        const body = JSON.stringify({ name: name, members: members });
+        els.networkEditorSave.disabled = true;
+        try {
+            const method = st.id ? "PUT" : "POST";
+            const url = st.id ? "/api/networks/" + encodeURIComponent(st.id) : "/api/networks";
+            const r = await fetch(url, {
+                method: method,
+                headers: { "Content-Type": "application/json" },
+                body: body,
+            });
+            if (r.ok) {
+                closeNetworkEditor();
+                await fetchNetworks();
+            }
+        } catch (_) { /* ignore */ } finally {
+            els.networkEditorSave.disabled = false;
+        }
+    }
+
+    // ---------- Stress network: board picker (modal-over-modal-over-modal) ----------
+
+    function openBoardPicker() {
+        if (!state.networkEditorState) return;
+        renderBoardPickerList();
+        els.boardPicker.hidden = false;
+    }
+
+    function closeBoardPicker() {
+        els.boardPicker.hidden = true;
+    }
+
+    /** List all boards not already in the network as pickable cards. */
+    function renderBoardPickerList() {
+        const st = state.networkEditorState;
+        els.boardPickerList.innerHTML = "";
+        const all = Array.from(state.boards.values()).slice()
+                .sort((a, b) => displayTitle(a).localeCompare(displayTitle(b)));
+        if (all.length === 0) {
+            const empty = document.createElement("div");
+            empty.className = "board-picker-empty";
+            empty.textContent = "暂无可用看板";
+            els.boardPickerList.appendChild(empty);
+            return;
+        }
+        const existing = new Set(st ? st.members.map((m) => m.boardName) : []);
+        const frag = document.createDocumentFragment();
+        all.forEach((b) => {
+            const card = document.createElement("div");
+            card.className = "board-picker-card";
+            if (existing.has(b.name)) card.classList.add("selected");
+            const name = document.createElement("span");
+            name.className = "picker-name";
+            name.textContent = displayTitle(b);
+            name.title = b.name;
+            const src = document.createElement("span");
+            src.className = "picker-source";
+            src.textContent = b.sourceLabel || shortSource(b.sourceType) || "board";
+            const add = document.createElement("span");
+            add.className = "picker-add";
+            add.textContent = existing.has(b.name) ? "已添加" : "+ 添加";
+            card.appendChild(name);
+            card.appendChild(src);
+            card.appendChild(add);
+            card.addEventListener("click", () => {
+                if (!state.networkEditorState) return;
+                if (existing.has(b.name)) return; // already a member
+                state.networkEditorState.members.push({
+                    boardName: b.name,
+                    role: "producer",
+                    label: "",
+                    lineIndex: 0,
+                });
+                closeBoardPicker();
+                renderNetworkEditor();
+            });
+            frag.appendChild(card);
+        });
+        els.boardPickerList.appendChild(frag);
+    }
+
     // ---------- Helpers ----------
 
     /** "create:nixie_tube" → "nixie_tube"; "create_web_board:foo" → "foo". */
@@ -1129,10 +1955,14 @@
         // Only close when the overlay itself (not the dialog) is clicked.
         if (ev.target === els.modal) closeModal();
     });
-    // Esc 优先关产物选择弹窗（modal-over-modal），其次关看板详情。
+    // Esc 关闭最上层的弹窗（modal-over-modal 优先）：board picker > item picker >
+    // network editor > network modal > board modal.
     document.addEventListener("keydown", (ev) => {
         if (ev.key !== "Escape") return;
-        if (!els.itemPicker.hidden) closeItemPicker();
+        if (!els.boardPicker.hidden) closeBoardPicker();
+        else if (!els.itemPicker.hidden) closeItemPicker();
+        else if (!els.networkEditor.hidden) closeNetworkEditor();
+        else if (!els.networkModal.hidden) closeNetworkModal();
         else if (!els.modal.hidden) closeModal();
     });
     els.saveName.addEventListener("click", saveDisplayName);
@@ -1141,12 +1971,24 @@
         if (ev.key === "Enter") { ev.preventDefault(); saveDisplayName(); }
     });
 
-    // Group toggle: cluster cards by tag on the main grid.
+    // View toggle (看板 / 网络): switches the main grid between board cards and network cards.
+    els.viewToggle.addEventListener("click", () => {
+        state.viewMode = state.viewMode === "networks" ? "boards" : "networks";
+        els.viewToggle.setAttribute("aria-pressed", String(state.viewMode === "networks"));
+        // "新建网络" button is only meaningful in network view.
+        els.newNetworkBtn.hidden = state.viewMode !== "networks";
+        render();
+    });
+
+    // Group toggle: cluster cards by tag on the main grid (boards view only).
     els.groupToggle.addEventListener("click", () => {
         state.grouped = !state.grouped;
         els.groupToggle.setAttribute("aria-pressed", String(state.grouped));
         render();
     });
+
+    // New network button: opens the editor with a blank network.
+    els.newNetworkBtn.addEventListener("click", () => openNetworkEditor(null));
 
     // Tag editor: Enter or 添加 button appends a tag.
     els.addTag.addEventListener("click", addTag);
@@ -1165,6 +2007,38 @@
     els.itemPickerClear.addEventListener("click", clearItemPicker);
     els.itemPickerConfirm.addEventListener("click", confirmItems);
 
+    // Network detail modal: close, overlay backdrop click, rename, delete, edit, Enter-to-save.
+    els.networkModalClose.addEventListener("click", closeNetworkModal);
+    els.networkModal.addEventListener("click", (ev) => {
+        if (ev.target === els.networkModal) closeNetworkModal();
+    });
+    els.networkSaveName.addEventListener("click", saveNetworkName);
+    els.networkDeleteBtn.addEventListener("click", deleteNetwork);
+    els.networkEditBtn.addEventListener("click", () => {
+        const id = state.networkModalId;
+        if (!id) return;
+        const net = state.networks.get(id);
+        if (net) openNetworkEditor(net);
+    });
+    els.networkNameInput.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") { ev.preventDefault(); saveNetworkName(); }
+    });
+
+    // Network editor (modal-over-modal): close, overlay backdrop click, add board, cancel, save.
+    els.networkEditorClose.addEventListener("click", closeNetworkEditor);
+    els.networkEditor.addEventListener("click", (ev) => {
+        if (ev.target === els.networkEditor) closeNetworkEditor();
+    });
+    els.networkEditorAdd.addEventListener("click", openBoardPicker);
+    els.networkEditorCancel.addEventListener("click", closeNetworkEditor);
+    els.networkEditorSave.addEventListener("click", saveNetwork);
+
+    // Board picker (modal-over-modal): close, overlay backdrop click.
+    els.boardPickerClose.addEventListener("click", closeBoardPicker);
+    els.boardPicker.addEventListener("click", (ev) => {
+        if (ev.target === els.boardPicker) closeBoardPicker();
+    });
+
     tickClock();
     setInterval(tickClock, 1000);
 
@@ -1172,6 +2046,10 @@
     setInterval(fetchHealth, 5000);
 
     setInterval(fetchAll, 5000);
+
+    // Stress networks: poll every 5s (alongside fetchAll) so live aggregates stay fresh.
+    fetchNetworks();
+    setInterval(fetchNetworks, 5000);
 
     startLastSeenTicker();
 

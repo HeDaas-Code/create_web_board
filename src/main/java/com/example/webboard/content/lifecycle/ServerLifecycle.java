@@ -56,6 +56,8 @@ public final class ServerLifecycle {
         // Load the rendered-icon pack (uploaded by a client, or dropped as webboard-icons.zip).
         // When absent, the dashboard falls back to raw PNG textures and short item ids.
         IconPackStorage.get().init();
+        // Initialize stress network persistence (user-created network definitions).
+        com.example.webboard.content.network.NetworkStorage.get().init();
         httpServer = new HttpServer(cfg, com.example.webboard.content.registry.BoardRegistry.get());
         try {
             httpServer.start();
@@ -70,6 +72,7 @@ public final class ServerLifecycle {
         if (httpServer != null) {
             // Close the database connection before shutting down the HTTP server.
             BoardDatabase.get().close();
+            com.example.webboard.content.network.NetworkStorage.get().close();
             httpServer.stop();
             httpServer = null;
         }

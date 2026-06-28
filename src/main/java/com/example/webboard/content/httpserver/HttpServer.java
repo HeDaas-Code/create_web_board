@@ -58,6 +58,7 @@ public class HttpServer {
         registerStaticAsset(app, "/app.js", "/app.js", "application/javascript; charset=utf-8");
 
         ApiRoutes.register(app, BoardRegistry.get(), hub);
+        NetworkRoutes.register(app);
 
         // WebSocket endpoint — clients connect here for live updates.
         app.ws("/ws", ws -> {
