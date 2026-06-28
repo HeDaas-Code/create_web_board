@@ -185,6 +185,36 @@ src/main/resources/
 - **PR description must include**: what changed, why, what tests were added, what CI run verifies it.
 - **Do not commit** `build/`, `.gradle/`, `*.jar` (already in `.gitignore`).
 
+### 6.1 Releases — DO NOT cut a release without explicit maintainer approval
+
+**Versions are not bumped per feature.** A release is cut only when the maintainer
+explicitly says so (e.g. "publish this", "cut a release", "ship v0.8.0"). The
+intervals between releases are intentionally long — multiple features accumulate
+under the same version until the maintainer decides to ship.
+
+When you land new code:
+
+- ✅ Commit to `main` (or a feature branch → PR). The `build` workflow verifies it.
+- ✅ Keep `mod_version` in `gradle.properties` as-is unless told to bump it.
+- ❌ **Do NOT** `git tag v*` or push a tag. Tags trigger the `release` workflow,
+  which publishes a public GitHub Release with a downloadable jar — irreversible.
+- ❌ **Do NOT** bump `mod_version` on your own initiative because "a feature was added".
+- ❌ **Do NOT** add a `## [x.y.z]` entry to `CHANGELOG.md` speculatively.
+
+When the maintainer **does** ask for a release, the required sequence is:
+
+1. Add a `## [x.y.z] - YYYY-MM-DD` entry to `CHANGELOG.md` describing every change
+   since the last release (use the Added/Changed/Fixed/etc. categories). This entry
+   becomes the GitHub Release body — the `release` workflow extracts it automatically,
+   and the job fails loudly if the entry is missing.
+2. Bump `mod_version` in `gradle.properties` to the same `x.y.z`.
+3. Commit both changes together.
+4. `git tag v<x.y.z>` and `git push origin v<x.y.z>`. The `release` workflow builds
+   the jar and creates the GitHub Release using the changelog entry as the body.
+
+If unsure whether something counts as "the maintainer asked for a release", **ask**.
+A phrase like "优化一下仓库" or "fix this bug" is a code change, NOT a release request.
+
 ---
 
 ## 7. Known pitfalls
