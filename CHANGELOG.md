@@ -56,6 +56,16 @@ section of [README.md](README.md).
 - `neoforge.mods.toml` declares `create_railways_navigator` as an optional
   dependency so users discover the integration.
 
+### Fixed
+- **Route shadowing bug**: `/api/trains/{id}` (path-param) was greedily matching
+  the sibling literal routes `/api/trains/graph` and `/api/trains/health`,
+  returning `{"error":"train not found: \"health\""}` (404) instead of the health
+  / topology JSON. The single-train endpoint is now `/api/trains/by-id/{id}` so
+  the path-param can no longer shadow the literal sub-paths. Reported in v0.7.1
+  field testing ("CRN 离线" + empty map symptom).
+- Main dashboard topbar had no link to the new dispatch map page; added a
+  "调度图" button (train icon). Reverse link already existed in `trains.html`.
+
 ## [0.7.0] - 2026-06-28
 
 ### Added

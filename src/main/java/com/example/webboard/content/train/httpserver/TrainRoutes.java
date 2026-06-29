@@ -33,7 +33,7 @@ import java.util.List;
  *   <li><b>Live data</b> (read-only, served from {@link TrainMirrorService}):
  *     <ul>
  *       <li>{@code GET /api/trains} — all live train snapshots</li>
- *       <li>{@code GET /api/trains/{id}} — single train snapshot (404 if missing)</li>
+ *       <li>{@code GET /api/trains/by-id/{id}} — single train snapshot (404 if missing)</li>
  *       <li>{@code GET /api/trains/graph} — current track-graph topology</li>
  *       <li>{@code GET /api/trains/health} — service status + CRN bridge status</li>
  *     </ul>
@@ -90,7 +90,11 @@ public final class TrainRoutes {
             ctx.result(TrainJsonUtil.trainsToJson(TrainMirrorService.get().allTrains()));
         });
 
-        app.get("/api/trains/{id}", ctx -> {
+        // NOTE: path is /api/trains/by-id/{id} (not /api/trains/{id}) to avoid the path-param
+        // route shadowing the sibling literal routes /api/trains/graph and /api/trains/health.
+        // Javalin matches {id} greedily, so /api/trains/health was being interpreted as
+        // "fetch train with id=health" → 404. Reported in v0.7.1 field testing.
+        app.get("/api/trains/by-id/{id}", ctx -> {
             String id = ctx.pathParam("id");
             TrainSnapshot t = TrainMirrorService.get().getTrain(id);
             if (t == null) {
