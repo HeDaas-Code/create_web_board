@@ -1,6 +1,7 @@
 package com.example.webboard.content.train;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -56,6 +57,13 @@ public final class TrainPoller {
     private static long tickCounter = 0;
     private static volatile boolean enabled = false;
 
+    /**
+     * Previous-cycle train states, keyed by trainId. Used by {@link #detectDepartureEvents} to
+     * detect arrival/departure transitions by comparing consecutive snapshots. Cleared on
+     * {@link #disable()} so a fresh server start doesn't generate spurious events from stale data.
+     */
+    private static final Map<String, TrainSnapshot> previousTrainStates = new HashMap<>();
+
     private TrainPoller() {}
 
     /** Enable polling. Called from ServerLifecycle on server start. */
@@ -67,6 +75,7 @@ public final class TrainPoller {
     /** Disable polling and clear the mirror. Called from ServerLifecycle on server stop. */
     public static void disable() {
         enabled = false;
+        previousTrainStates.clear();
     }
 
     @SubscribeEvent
@@ -101,7 +110,61 @@ public final class TrainPoller {
                 LOGGER.debug("[web_board] Failed to snapshot train: {}", t.toString());
             }
         }
+
+        // Detect arrival/departure events by comparing with the previous cycle's snapshots.
+        // This is the fallback departure-history source — works with or without CRN.
+        detectDepartureEvents(snapshots);
+
         TrainMirrorService.get().replaceAllTrains(snapshots);
+    }
+
+    /**
+     * Compare current train snapshots with the previous cycle to detect station arrivals and
+     * departures. Records events into {@link DepartureHistory}.
+     *
+     * <p>Transitions detected:
+     * <ul>
+     *   <li>{@code navigating=true → navigating=false} with same target → ARRIVAL at that station</li>
+     *   <li>{@code navigating=false → navigating=true} → DEPARTURE from the previous station</li>
+     * </ul>
+     *
+     * <p>First sighting of a train (no previous state) generates no event — we don't know if it
+     * was already at the station or just arrived. Trains that disappear are silently removed.
+     */
+    private static void detectDepartureEvents(List<TrainSnapshot> current) {
+        if (current.isEmpty()) {
+            previousTrainStates.clear();
+            return;
+        }
+        long now = System.currentTimeMillis();
+        // Track which trainIds are still present so we can evict disappeared trains.
+        java.util.Set<String> currentIds = new java.util.HashSet<>();
+        for (TrainSnapshot curr : current) {
+            currentIds.add(curr.trainId());
+            TrainSnapshot prev = previousTrainStates.get(curr.trainId());
+            if (prev == null) continue;
+
+            if (prev.navigating() && !curr.navigating()) {
+                // Was heading to a station, now at it → arrival.
+                String station = curr.navigationTarget();
+                if (station != null && !station.isEmpty()) {
+                    DepartureHistory.get().record(DepartureRecord.arrival(
+                            now, curr.trainId(), curr.name(), station, "", ""));
+                }
+            } else if (!prev.navigating() && curr.navigating()) {
+                // Was at a station, now heading somewhere → departure.
+                String station = prev.navigationTarget();
+                if (station != null && !station.isEmpty()) {
+                    DepartureHistory.get().record(DepartureRecord.departure(
+                            now, curr.trainId(), curr.name(), station, "", ""));
+                }
+            }
+        }
+        // Evict disappeared trains and update with current state.
+        previousTrainStates.keySet().retainAll(currentIds);
+        for (TrainSnapshot snap : current) {
+            previousTrainStates.put(snap.trainId(), snap);
+        }
     }
 
     /** Read all track graphs from {@code Create.RAILWAYS.trackNetworks} into the mirror service. */

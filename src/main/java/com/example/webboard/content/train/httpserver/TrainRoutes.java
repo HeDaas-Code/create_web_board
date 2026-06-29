@@ -18,7 +18,9 @@ import com.example.webboard.content.train.TrainSnapshot;
 
 import io.javalin.Javalin;
 
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * TrainRoutes — registers all train-dashboard HTTP endpoints on the Javalin app.
@@ -235,6 +237,9 @@ public final class TrainRoutes {
 
     private static void registerRouteSearchRoutes(Javalin app) {
         // GET /api/routes/search?from=Central&to=Terminal&maxResults=3
+        // The from/to params accept either a CRN station tag name (expanded to all stations in
+        // the tag) or a raw Create station name. Tag names take priority — this matches the
+        // dashboard UX where the dropdown shows tag names when CRN is present.
         app.get("/api/routes/search", ctx -> {
             String from = ctx.queryParam("from");
             String to = ctx.queryParam("to");
@@ -245,10 +250,26 @@ public final class TrainRoutes {
                 return;
             }
             TrackGraphSnapshot graph = TrainMirrorService.get().currentGraph();
-            List<RouteOption> routes = RouteSearchService.search(graph, from, to, maxResults);
+            Set<String> fromStations = resolveStationSet(from);
+            Set<String> toStations = resolveStationSet(to);
+            List<RouteOption> routes = RouteSearchService.search(graph, fromStations, toStations, maxResults);
             ctx.contentType("application/json");
             ctx.result(TrainJsonUtil.routeOptionsToJson(routes));
         });
+    }
+
+    /**
+     * Resolve a search param to a set of Create station names. If the param matches a CRN
+     * station tag name, expand to all stations grouped under that tag. Otherwise treat the
+     * param as a direct Create station name (singleton set).
+     */
+    private static Set<String> resolveStationSet(String param) {
+        for (StationTag tag : CrnBridge.get().stationTags()) {
+            if (param.equals(tag.name()) && !tag.stationNames().isEmpty()) {
+                return new HashSet<>(tag.stationNames());
+            }
+        }
+        return Set.of(param);
     }
 
     // ---------- helpers ----------

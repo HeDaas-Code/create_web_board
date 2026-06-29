@@ -175,11 +175,13 @@ public final class CrnBridge {
             try {
                 String id = invokeString(crnTag, "getId");
                 String name = readTagName(crnTag);
-                result.add(new StationTag(
+                List<String> stationNames = readStationNames(crnTag);
+                result.add(StationTag.create(
                         id != null ? id : "",
                         name != null ? name : "",
                         "",   // CRN tags don't have a "type" field
-                        0));  // CRN tags don't have a color
+                        0,    // CRN tags don't have a color
+                        stationNames));
             } catch (Throwable t) {
                 LOGGER.debug("[web_board] CRN station tag read failed: {}", t.toString());
             }
@@ -248,5 +250,28 @@ public final class CrnBridge {
         } catch (Throwable t) {
             return null;
         }
+    }
+
+    /**
+     * Read {@code getAllStationNames()} as a List of Strings. CRN's StationTag groups Create
+     * stations by name — this is the mapping that lets route search resolve a tag to graph nodes.
+     * Returns empty list on any error (including CRN versions that lack this method).
+     */
+    @SuppressWarnings("unchecked")
+    private List<String> readStationNames(Object stationTag) {
+        try {
+            Method m = stationTag.getClass().getMethod("getAllStationNames");
+            Object result = m.invoke(stationTag);
+            if (result instanceof Collection<?> col) {
+                List<String> names = new ArrayList<>(col.size());
+                for (Object o : col) {
+                    if (o != null) names.add(o.toString());
+                }
+                return List.copyOf(names);
+            }
+        } catch (Throwable t) {
+            LOGGER.debug("[web_board] CRN getAllStationNames() failed: {}", t.toString());
+        }
+        return List.of();
     }
 }

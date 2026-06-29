@@ -157,7 +157,14 @@ public final class TrainJsonUtil {
                 .append(",\"name\":").append(JsonUtil.quote(t.name()))
                 .append(",\"type\":").append(JsonUtil.quote(t.type()))
                 .append(",\"color\":").append(t.color())
-                .append('}');
+                .append(",\"stationNames\":[");
+        boolean first = true;
+        for (String s : t.stationNames()) {
+            if (!first) sb.append(',');
+            first = false;
+            sb.append(JsonUtil.quote(s));
+        }
+        sb.append("]}");
         return sb.toString();
     }
 
