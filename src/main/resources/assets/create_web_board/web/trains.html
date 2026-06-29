@@ -101,7 +101,7 @@
 
         <span class="trains-stat"><b id="stat-trains">0</b> 列车</span>
         <span class="trains-stat"><b id="stat-stations">0</b> 站点</span>
-        <span class="trains-stat"><b id="stat-edges">0</b> 铁道</span>
+        <span class="trains-stat"><b id="stat-lines">0</b> 线路</span>
         <span class="trains-stat" title="CRN 软依赖">
             <span class="trains-status-dot" id="crn-dot"></span>CRN <span id="crn-status">…</span>
         </span>
@@ -139,68 +139,32 @@
         </div>
     </div>
 
-    <!-- Categories pane -->
+    <!-- Categories pane (read-only — synced from CRN) -->
     <div class="pane" id="pane-categories">
         <h2>列车分类</h2>
-        <p class="hint">分类用于在调度图上用颜色区分列车类型（货运 / 客运 / 混合 / 其他）。与 CRN 联动时自动同步。</p>
-        <div class="crud-form">
-            <input type="text" id="cat-name" placeholder="分类名称" maxlength="32" />
-            <input type="color" id="cat-color" value="#3b82f6" title="颜色" />
-            <select id="cat-freight">
-                <option value="freight">货运</option>
-                <option value="passenger">客运</option>
-                <option value="mixed">混合</option>
-                <option value="other">其他</option>
-            </select>
-            <button class="btn btn-primary" id="cat-create">添加</button>
-        </div>
+        <p class="hint">从 CRN 自动同步，只读展示。请在游戏内通过 CRN 界面管理分类。</p>
         <table class="crud-table">
-            <thead><tr><th>名称</th><th>颜色</th><th>类型</th><th></th></tr></thead>
+            <thead><tr><th>名称</th><th>颜色</th></tr></thead>
             <tbody id="cat-tbody"></tbody>
         </table>
     </div>
 
-    <!-- Lines pane -->
+    <!-- Lines pane (read-only — synced from CRN) -->
     <div class="pane" id="pane-lines">
         <h2>线路</h2>
-        <p class="hint">线路是有序站点序列，用于路径搜索和时刻表展示。</p>
-        <div class="crud-form">
-            <input type="text" id="line-name" placeholder="线路名称" maxlength="32" />
-            <input type="color" id="line-color" value="#10b981" title="颜色" />
-            <select id="line-category"></select>
-            <button class="btn btn-primary" id="line-create">添加</button>
-        </div>
+        <p class="hint">从 CRN 自动同步，只读展示。请在游戏内通过 CRN 界面管理线路。</p>
         <table class="crud-table">
-            <thead><tr><th>名称</th><th>分类</th><th>站点数</th><th></th></tr></thead>
+            <thead><tr><th>名称</th><th>颜色</th></tr></thead>
             <tbody id="line-tbody"></tbody>
         </table>
-        <h3>线路站点编辑</h3>
-        <p class="hint">选择一条线路后，可在此添加/移除站点（每行一个站点名，按顺序）。</p>
-        <div class="crud-form">
-            <select id="line-edit-select"></select>
-        </div>
-        <textarea id="line-edit-stations" rows="6" style="width:100%;background:#1a1e25;border:1px solid #2a2f3a;color:#e6e6e6;padding:8px;border-radius:4px;font-size:12px;font-family:monospace;" placeholder="每行一个站点名"></textarea>
-        <div class="crud-form" style="margin-top:6px;">
-            <button class="btn btn-primary" id="line-edit-save">保存站点</button>
-        </div>
     </div>
 
-    <!-- Tags pane -->
+    <!-- Tags pane (read-only — synced from CRN) -->
     <div class="pane" id="pane-tags">
         <h2>站点标签</h2>
-        <p class="hint">标签用于给站点分组（如：换乘站、终点站、货运站）。</p>
-        <div class="crud-form">
-            <input type="text" id="tag-name" placeholder="标签名称" maxlength="32" />
-            <input type="color" id="tag-color" value="#f59e0b" title="颜色" />
-            <select id="tag-type">
-                <option value="station">车站</option>
-                <option value="signal">信号</option>
-                <option value="redstone">红石</option>
-            </select>
-            <button class="btn btn-primary" id="tag-create">添加</button>
-        </div>
+        <p class="hint">从 CRN 自动同步，只读展示。请在游戏内通过 CRN 界面管理标签。</p>
         <table class="crud-table">
-            <thead><tr><th>名称</th><th>类型</th><th>颜色</th><th></th></tr></thead>
+            <thead><tr><th>名称</th></tr></thead>
             <tbody id="tag-tbody"></tbody>
         </table>
     </div>

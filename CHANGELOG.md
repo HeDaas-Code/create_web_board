@@ -23,28 +23,27 @@ section of [README.md](README.md).
   200 ticks (10 s). All Create API calls are wrapped in try/catch so a railway
   hiccup can never crash a game tick.
 - **Live data REST API** (read-only, served from `TrainMirrorService`):
-  - `GET /api/trains`, `GET /api/trains/{id}` — live train snapshots (position,
+  - `GET /api/trains`, `GET /api/trains/by-id/{id}` — live train snapshots (position,
     speed, heading, status, navigation target, carriage count).
   - `GET /api/trains/graph` — current track-graph topology (nodes, edges, stations).
-  - `GET /api/trains/health` — service status + CRN bridge status + counters.
-- **CRUD REST API** (persisted to `config/webboard-trains.json`):
-  - `POST/PUT/DELETE /api/train-categories[/{id}]` — train categories
-    (name, color, freightType).
-  - `POST/PUT/DELETE /api/train-lines[/{id}]` — train lines
-    (name, color, categoryId, ordered stationNames).
-  - `POST/PUT/DELETE /api/station-tags[/{id}]` — station tags
-    (name, type, color).
+  - `GET /api/trains/health` — service status + CRN bridge status + CRN line count + counters.
+- **Metadata REST API** (read-only, synced from CRN when present):
+  - `GET /api/train-categories` — train categories (from CRN `GlobalSettings`).
+  - `GET /api/train-lines` — train lines (from CRN `GlobalSettings`).
+  - `GET /api/station-tags` — station tags (from CRN `GlobalSettings`).
   - `PUT/DELETE /api/train-metadata/{trainId}` — per-train user config
-    (displayName, categoryId, lineId, color, notes).
+    (displayName, categoryId, lineId, color, notes), persisted to
+    `config/webboard-trains.json`.
 - **Route search**: `GET /api/routes/search?from=...&to=...&maxResults=...` runs a
   bounded-depth k-shortest-paths DFS over the live track graph and returns hops,
   total distance, and an estimated travel time.
 - **Departure history**: `GET /api/departures?station=...&limit=...` and
   `GET /api/departures/all?limit=...`. Each station keeps a 100-entry ring buffer.
 - **CRN soft-dependency bridge** (`CrnBridge`): detects Create Railways Navigator
-  via reflection at server start and subscribes to its event bus when present.
-  v0.7.1 degrades gracefully to polling when CRN is absent or its events are
-  unavailable — the dashboard keeps working with Create-only data.
+  via `ModList.get().isLoaded()` and syncs its `GlobalSettings` (categories, lines,
+  station tags) via reflection every 10 s. The dashboard serves these read-only —
+  categories/lines/tags are managed in-game through CRN, not on the web page.
+  Degrades gracefully to Create-only data when CRN is absent.
 - **15 new unit tests** for `TrainPollerMath` (poll-tick cadence + 8-wind compass
   bearing), bringing the suite to **60 tests** total.
 
@@ -63,6 +62,21 @@ section of [README.md](README.md).
   / topology JSON. The single-train endpoint is now `/api/trains/by-id/{id}` so
   the path-param can no longer shadow the literal sub-paths. Reported in v0.7.1
   field testing ("CRN 离线" + empty map symptom).
+- **Map misalignment (trains vs topology)**: `TrackNodeLocation` stores coordinates
+  at 2× resolution (Create's half-block precision design), but train positions from
+  `TravellingPoint.getPosition()` are real world coords. Nodes/edges/stations now
+  divide by 2 so they align with trains on the SVG map.
+- **CRN always showing "未安装"**: detection used `Class.forName` on a wrong package
+  path (`cn.creatrailwaysnavigator` instead of `de.mrjulsen.crn`). Switched to
+  `ModList.get().isLoaded("createrailwaysnavigator")` — the standard NeoForge way,
+  independent of CRN's internal class layout.
+- **Categories/lines/tags now read-only on web**: previously had web CRUD forms that
+  duplicated CRN's in-game management, causing data inconsistency. Removed all
+  POST/PUT/DELETE endpoints and frontend forms; data is synced from CRN's
+  `GlobalSettings` every 10 s via reflection.
+- **"铁道" stat replaced with "线路"**: the edge count was misleading. The health
+  endpoint now reports `crnLines` (CRN train line count) and the topbar shows
+  线路 instead of 铁道.
 - Main dashboard topbar had no link to the new dispatch map page; added a
   "调度图" button (train icon). Reverse link already existed in `trains.html`.
 

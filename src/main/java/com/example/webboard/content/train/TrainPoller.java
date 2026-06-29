@@ -128,6 +128,10 @@ public final class TrainPoller {
                 List.copyOf(stations),
                 System.currentTimeMillis());
         TrainMirrorService.get().replaceGraph(snapshot);
+
+        // Sync CRN metadata (categories / lines / station tags) on the same slow cycle.
+        // No-op when CRN is absent; reflection errors are caught inside CrnBridge.
+        com.example.webboard.content.train.CrnBridge.get().syncMetadata();
     }
 
     /** Build a {@link TrainSnapshot} from a Create {@link Train}. Returns null if unusable. */
@@ -209,18 +213,21 @@ public final class TrainPoller {
                                      List<StationInfo> stations) {
         if (graph == null) return;
 
-        // Nodes
+        // Nodes — TrackNodeLocation extends Vec3i and stores coordinates at 2× resolution
+        // (Create's design for half-block track precision). Divide by 2 to get real world
+        // coords, otherwise nodes render at 2× the position of trains (which use
+        // TravellingPoint.getPosition() returning real Vec3) → map misalignment.
         for (TrackNodeLocation loc : graph.getNodes()) {
             if (loc == null) continue;
             String dim = loc.getDimension() != null ? loc.getDimension().location().toString() : "";
             TrackGraphSnapshot.TrackNodePos pos = new TrackGraphSnapshot.TrackNodePos(
-                    dim, loc.getX(), loc.getY(), loc.getZ());
+                    dim, loc.getX() / 2, loc.getY() / 2, loc.getZ() / 2);
             nodes.add(pos);
         }
 
         // Edges — iterate from each node's connection map. Each edge appears once per
         // direction (a→b and b→a reference the same TrackEdge); we emit only a→b to avoid
-        // doubling the line count on the map.
+        // doubling the line count on the map. Coordinates ÷2 for the same reason as nodes.
         for (TrackNodeLocation loc : graph.getNodes()) {
             TrackNode from = graph.locateNode(loc);
             if (from == null) continue;
@@ -238,9 +245,9 @@ public final class TrainPoller {
                 String fromDim = fromLoc.getDimension() != null ? fromLoc.getDimension().location().toString() : "";
                 String toDim = toLoc.getDimension() != null ? toLoc.getDimension().location().toString() : "";
                 TrackGraphSnapshot.TrackNodePos a =
-                        new TrackGraphSnapshot.TrackNodePos(fromDim, fromLoc.getX(), fromLoc.getY(), fromLoc.getZ());
+                        new TrackGraphSnapshot.TrackNodePos(fromDim, fromLoc.getX() / 2, fromLoc.getY() / 2, fromLoc.getZ() / 2);
                 TrackGraphSnapshot.TrackNodePos b =
-                        new TrackGraphSnapshot.TrackNodePos(toDim, toLoc.getX(), toLoc.getY(), toLoc.getZ());
+                        new TrackGraphSnapshot.TrackNodePos(toDim, toLoc.getX() / 2, toLoc.getY() / 2, toLoc.getZ() / 2);
                 double length;
                 try {
                     length = edge.getLength();
@@ -251,16 +258,16 @@ public final class TrainPoller {
             }
         }
 
-        // Stations — Create's typed edge-point collection.
+        // Stations — Create's typed edge-point collection. Same ÷2 coordinate fix.
         try {
             for (GlobalStation station : graph.getPoints(EdgePointType.STATION)) {
                 if (station == null || station.name == null) continue;
                 TrackNodeLocation loc = station.edgeLocation != null ? station.edgeLocation.getFirst() : null;
                 String dim = loc != null && loc.getDimension() != null
                         ? loc.getDimension().location().toString() : "";
-                int sx = loc != null ? loc.getX() : 0;
-                int sy = loc != null ? loc.getY() : 0;
-                int sz = loc != null ? loc.getZ() : 0;
+                int sx = loc != null ? loc.getX() / 2 : 0;
+                int sy = loc != null ? loc.getY() / 2 : 0;
+                int sz = loc != null ? loc.getZ() / 2 : 0;
                 stations.add(new StationInfo(station.name, dim, sx, sy, sz, "station"));
             }
         } catch (Throwable t) {

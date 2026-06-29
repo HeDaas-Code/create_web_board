@@ -90,7 +90,7 @@
             document.querySelectorAll('.pane').forEach(p => p.classList.toggle('active', p.id === 'pane-' + pane));
             state.activePane = pane;
             if (pane === 'categories') loadCategories();
-            else if (pane === 'lines') { loadCategories().then(loadLines); }
+            else if (pane === 'lines') loadLines();
             else if (pane === 'tags') loadTags();
             else if (pane === 'routes') populateRouteSelectors();
             else if (pane === 'departures') populateDepartureSelector();
@@ -113,7 +113,7 @@
     function renderStats() {
         document.getElementById('stat-trains').textContent = state.trains.length;
         document.getElementById('stat-stations').textContent = state.graph.stations.length;
-        document.getElementById('stat-edges').textContent = state.graph.edges.length;
+        // stat-lines is set by pollHealth() from the CRN line count, not from graph edges.
     }
 
     // ---------- SVG map ----------
@@ -250,14 +250,11 @@
             </div>`;
     }
 
-    // ---------- categories CRUD ----------
+    // ---------- categories (read-only, synced from CRN) ----------
     function loadCategories() {
         return fetchJson('/api/train-categories').then(list => {
             state.categories = list;
             renderCategoryTable();
-            // Refresh the line-category dropdown
-            const sel = document.getElementById('line-category');
-            sel.innerHTML = list.map(c => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}</option>`).join('');
             return list;
         }).catch(err => console.warn('categories load failed:', err));
     }
@@ -265,44 +262,21 @@
     function renderCategoryTable() {
         const tbody = document.getElementById('cat-tbody');
         if (state.categories.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="4" class="empty-list">暂无分类</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="2" class="empty-list">暂无分类（请在游戏内通过 CRN 添加）</td></tr>';
             return;
         }
-        const freightLabel = { freight: '货运', passenger: '客运', mixed: '混合', other: '其他' };
         tbody.innerHTML = state.categories.map(c => `
             <tr>
                 <td>${escapeHtml(c.name)}</td>
                 <td><span class="swatch" style="background:${intToHex(c.color)}"></span>${intToHex(c.color)}</td>
-                <td>${freightLabel[c.freightType] || c.freightType}</td>
-                <td><button class="btn btn-danger" data-del-cat="${escapeHtml(c.id)}">删除</button></td>
             </tr>`).join('');
-        tbody.querySelectorAll('[data-del-cat]').forEach(btn => {
-            btn.addEventListener('click', () => {
-                del('/api/train-categories/' + encodeURIComponent(btn.dataset.delCat))
-                    .then(loadCategories).catch(err => alert('删除失败: ' + err.message));
-            });
-        });
     }
 
-    document.getElementById('cat-create').addEventListener('click', () => {
-        const name = document.getElementById('cat-name').value.trim();
-        if (!name) return;
-        const hex = document.getElementById('cat-color').value;
-        const color = parseInt(hex.slice(1), 16);
-        const freightType = document.getElementById('cat-freight').value;
-        postJson('/api/train-categories', { name, color, freightType })
-            .then(() => {
-                document.getElementById('cat-name').value = '';
-                loadCategories();
-            }).catch(err => alert('添加失败: ' + err.message));
-    });
-
-    // ---------- lines CRUD ----------
+    // ---------- lines (read-only, synced from CRN) ----------
     function loadLines() {
         return fetchJson('/api/train-lines').then(list => {
             state.lines = list;
             renderLineTable();
-            renderLineEditSelect();
             return list;
         }).catch(err => console.warn('lines load failed:', err));
     }
@@ -310,65 +284,17 @@
     function renderLineTable() {
         const tbody = document.getElementById('line-tbody');
         if (state.lines.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="4" class="empty-list">暂无线路</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="2" class="empty-list">暂无线路（请在游戏内通过 CRN 添加）</td></tr>';
             return;
         }
-        tbody.innerHTML = state.lines.map(l => {
-            const cat = state.categories.find(c => c.id === l.categoryId);
-            return `
-                <tr>
-                    <td><span class="swatch" style="background:${intToHex(l.color)}"></span>${escapeHtml(l.name)}</td>
-                    <td>${escapeHtml(cat ? cat.name : '—')}</td>
-                    <td>${l.stationNames.length}</td>
-                    <td><button class="btn btn-danger" data-del-line="${escapeHtml(l.id)}">删除</button></td>
-                </tr>`;
-        }).join('');
-        tbody.querySelectorAll('[data-del-line]').forEach(btn => {
-            btn.addEventListener('click', () => {
-                del('/api/train-lines/' + encodeURIComponent(btn.dataset.delLine))
-                    .then(loadLines).catch(err => alert('删除失败: ' + err.message));
-            });
-        });
+        tbody.innerHTML = state.lines.map(l => `
+            <tr>
+                <td><span class="swatch" style="background:${intToHex(l.color)}"></span>${escapeHtml(l.name)}</td>
+                <td>${intToHex(l.color)}</td>
+            </tr>`).join('');
     }
 
-    function renderLineEditSelect() {
-        const sel = document.getElementById('line-edit-select');
-        sel.innerHTML = '<option value="">选择线路…</option>' +
-            state.lines.map(l => `<option value="${escapeHtml(l.id)}">${escapeHtml(l.name)}</option>`).join('');
-    }
-
-    document.getElementById('line-create').addEventListener('click', () => {
-        const name = document.getElementById('line-name').value.trim();
-        if (!name) return;
-        const hex = document.getElementById('line-color').value;
-        const color = parseInt(hex.slice(1), 16);
-        const categoryId = document.getElementById('line-category').value || null;
-        postJson('/api/train-lines', { name, color, categoryId, stationNames: [] })
-            .then(() => {
-                document.getElementById('line-name').value = '';
-                loadLines();
-            }).catch(err => alert('添加失败: ' + err.message));
-    });
-
-    document.getElementById('line-edit-select').addEventListener('change', (e) => {
-        const line = state.lines.find(l => l.id === e.target.value);
-        if (!line) { document.getElementById('line-edit-stations').value = ''; return; }
-        document.getElementById('line-edit-stations').value = line.stationNames.join('\n');
-    });
-
-    document.getElementById('line-edit-save').addEventListener('click', () => {
-        const id = document.getElementById('line-edit-select').value;
-        if (!id) return;
-        const line = state.lines.find(l => l.id === id);
-        if (!line) return;
-        const stations = document.getElementById('line-edit-stations').value
-            .split('\n').map(s => s.trim()).filter(s => s.length > 0);
-        putJson('/api/train-lines/' + encodeURIComponent(id), {
-            name: line.name, color: line.color, categoryId: line.categoryId, stationNames: stations
-        }).then(loadLines).catch(err => alert('保存失败: ' + err.message));
-    });
-
-    // ---------- tags CRUD ----------
+    // ---------- tags (read-only, synced from CRN) ----------
     function loadTags() {
         return fetchJson('/api/station-tags').then(list => {
             state.tags = list;
@@ -379,37 +305,14 @@
     function renderTagTable() {
         const tbody = document.getElementById('tag-tbody');
         if (state.tags.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="4" class="empty-list">暂无标签</td></tr>';
+            tbody.innerHTML = '<tr><td class="empty-list">暂无标签（请在游戏内通过 CRN 添加）</td></tr>';
             return;
         }
-        const typeLabel = { station: '车站', signal: '信号', redstone: '红石' };
         tbody.innerHTML = state.tags.map(t => `
             <tr>
                 <td>${escapeHtml(t.name)}</td>
-                <td>${typeLabel[t.type] || t.type}</td>
-                <td><span class="swatch" style="background:${intToHex(t.color)}"></span>${intToHex(t.color)}</td>
-                <td><button class="btn btn-danger" data-del-tag="${escapeHtml(t.id)}">删除</button></td>
             </tr>`).join('');
-        tbody.querySelectorAll('[data-del-tag]').forEach(btn => {
-            btn.addEventListener('click', () => {
-                del('/api/station-tags/' + encodeURIComponent(btn.dataset.delTag))
-                    .then(loadTags).catch(err => alert('删除失败: ' + err.message));
-            });
-        });
     }
-
-    document.getElementById('tag-create').addEventListener('click', () => {
-        const name = document.getElementById('tag-name').value.trim();
-        if (!name) return;
-        const hex = document.getElementById('tag-color').value;
-        const color = parseInt(hex.slice(1), 16);
-        const type = document.getElementById('tag-type').value;
-        postJson('/api/station-tags', { name, color, type })
-            .then(() => {
-                document.getElementById('tag-name').value = '';
-                loadTags();
-            }).catch(err => alert('添加失败: ' + err.message));
-    });
 
     // ---------- route search ----------
     function populateRouteSelectors() {
@@ -480,6 +383,7 @@
             const txt = document.getElementById('crn-status');
             if (h.crn === 'detected') { dot.className = 'trains-status-dot dot-ok'; txt.textContent = '已联动'; }
             else { dot.className = 'trains-status-dot dot-warn'; txt.textContent = '未安装'; }
+            document.getElementById('stat-lines').textContent = h.crnLines || 0;
         }).catch(() => {
             document.getElementById('crn-dot').className = 'trains-status-dot dot-err';
             document.getElementById('crn-status').textContent = '离线';

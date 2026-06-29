@@ -38,16 +38,14 @@ import java.util.List;
  *       <li>{@code GET /api/trains/health} — service status + CRN bridge status</li>
  *     </ul>
  *   </li>
- *   <li><b>Categories</b> (CRUD on {@link TrainMetadataStorage}):
+ *   <li><b>Categories</b> (read-only — synced from CRN when present, fallback to
+ *       {@link TrainMetadataStorage} when absent):
  *     <ul>
  *       <li>{@code GET /api/train-categories}</li>
- *       <li>{@code POST /api/train-categories} — body {@code {"name":"...","color":0,"freightType":"freight"}}</li>
- *       <li>{@code PUT /api/train-categories/{id}}</li>
- *       <li>{@code DELETE /api/train-categories/{id}}</li>
  *     </ul>
  *   </li>
- *   <li><b>Lines</b> (CRUD): {@code GET/POST/PUT/DELETE /api/train-lines[/{id}]}</li>
- *   <li><b>Station tags</b> (CRUD): {@code GET/POST/PUT/DELETE /api/station-tags[/{id}]}</li>
+ *   <li><b>Lines</b> (read-only — synced from CRN): {@code GET /api/train-lines}</li>
+ *   <li><b>Station tags</b> (read-only — synced from CRN): {@code GET /api/station-tags}</li>
  *   <li><b>Train metadata</b> (per-train user config):
  *     <ul>
  *       <li>{@code GET /api/train-metadata}</li>
@@ -113,178 +111,58 @@ public final class TrainRoutes {
 
         app.get("/api/trains/health", ctx -> {
             TrainMirrorService svc = TrainMirrorService.get();
+            CrnBridge crn = CrnBridge.get();
             ctx.contentType("application/json");
             ctx.result("{\"status\":\"ok\""
                     + ",\"trains\":" + svc.trainCount()
                     + ",\"graphNodes\":" + svc.currentGraph().nodes().size()
                     + ",\"graphStations\":" + svc.currentGraph().stations().size()
-                    + ",\"crn\":\"" + CrnBridge.get().status() + "\""
+                    + ",\"crn\":\"" + crn.status() + "\""
+                    + ",\"crnLines\":" + crn.lineCount()
                     + ",\"departures\":" + DepartureHistory.get().totalRecords()
                     + "}");
         });
     }
 
-    // ---------- categories ----------
+    // ---------- categories (read-only when CRN present) ----------
 
     private static void registerCategoryRoutes(Javalin app) {
+        // GET only — categories are managed in-game via CRN, not on the web dashboard.
+        // When CRN is present, serve from CrnBridge's synced cache. When absent, fall back
+        // to the local TrainMetadataStorage (useful for no-CRN testing setups).
         app.get("/api/train-categories", ctx -> {
+            CrnBridge crn = CrnBridge.get();
+            List<TrainCategory> cats = crn.isPresent()
+                    ? crn.categories()
+                    : TrainMetadataStorage.get().allCategories();
             ctx.contentType("application/json");
-            ctx.result(TrainJsonUtil.categoriesToJson(TrainMetadataStorage.get().allCategories()));
-        });
-
-        app.post("/api/train-categories", ctx -> {
-            if (!TrainMetadataStorage.get().isInitialized()) { ctx.status(503); return; }
-            String body = ctx.body();
-            String name = JsonUtil.extractStringField(body, "name");
-            int color = JsonUtil.extractIntField(body, "color", 0);
-            String ftype = JsonUtil.extractStringField(body, "freightType");
-            if (name == null || name.isBlank()) {
-                ctx.status(400);
-                ctx.result("{\"error\":\"name is required\"}");
-                return;
-            }
-            TrainCategory c = TrainMetadataStorage.get().createCategory(name, color, ftype);
-            ctx.contentType("application/json");
-            ctx.result(TrainJsonUtil.categoryToJson(c));
-        });
-
-        app.put("/api/train-categories/{id}", ctx -> {
-            if (!TrainMetadataStorage.get().isInitialized()) { ctx.status(503); return; }
-            String id = ctx.pathParam("id");
-            String body = ctx.body();
-            String name = JsonUtil.extractStringField(body, "name");
-            int color = JsonUtil.extractIntField(body, "color", 0);
-            String ftype = JsonUtil.extractStringField(body, "freightType");
-            TrainCategory c = TrainMetadataStorage.get().updateCategory(id, name, color, ftype);
-            if (c == null) {
-                ctx.status(404);
-                ctx.result("{\"error\":\"category not found: " + JsonUtil.quote(id) + "\"}");
-                return;
-            }
-            ctx.contentType("application/json");
-            ctx.result(TrainJsonUtil.categoryToJson(c));
-        });
-
-        app.delete("/api/train-categories/{id}", ctx -> {
-            String id = ctx.pathParam("id");
-            boolean removed = TrainMetadataStorage.get().deleteCategory(id);
-            if (!removed) {
-                ctx.status(404);
-                ctx.result("{\"error\":\"category not found: " + JsonUtil.quote(id) + "\"}");
-                return;
-            }
-            ctx.contentType("application/json");
-            ctx.result("{\"removed\":" + JsonUtil.quote(id) + "}");
+            ctx.result(TrainJsonUtil.categoriesToJson(cats));
         });
     }
 
-    // ---------- lines ----------
+    // ---------- lines (read-only when CRN present) ----------
 
     private static void registerLineRoutes(Javalin app) {
         app.get("/api/train-lines", ctx -> {
+            CrnBridge crn = CrnBridge.get();
+            List<TrainLine> lines = crn.isPresent()
+                    ? crn.lines()
+                    : TrainMetadataStorage.get().allLines();
             ctx.contentType("application/json");
-            ctx.result(TrainJsonUtil.linesToJson(TrainMetadataStorage.get().allLines()));
-        });
-
-        app.post("/api/train-lines", ctx -> {
-            if (!TrainMetadataStorage.get().isInitialized()) { ctx.status(503); return; }
-            String body = ctx.body();
-            String name = JsonUtil.extractStringField(body, "name");
-            String categoryId = JsonUtil.extractStringField(body, "categoryId");
-            int color = JsonUtil.extractIntField(body, "color", 0);
-            List<String> stations = JsonUtil.extractStringArrayField(body, "stationNames");
-            if (name == null || name.isBlank()) {
-                ctx.status(400);
-                ctx.result("{\"error\":\"name is required\"}");
-                return;
-            }
-            TrainLine l = TrainMetadataStorage.get().createLine(name, categoryId, color, stations);
-            ctx.contentType("application/json");
-            ctx.result(TrainJsonUtil.lineToJson(l));
-        });
-
-        app.put("/api/train-lines/{id}", ctx -> {
-            if (!TrainMetadataStorage.get().isInitialized()) { ctx.status(503); return; }
-            String id = ctx.pathParam("id");
-            String body = ctx.body();
-            String name = JsonUtil.extractStringField(body, "name");
-            String categoryId = JsonUtil.extractStringField(body, "categoryId");
-            int color = JsonUtil.extractIntField(body, "color", 0);
-            List<String> stations = JsonUtil.extractStringArrayField(body, "stationNames");
-            TrainLine l = TrainMetadataStorage.get().updateLine(id, name, categoryId, color, stations);
-            if (l == null) {
-                ctx.status(404);
-                ctx.result("{\"error\":\"line not found: " + JsonUtil.quote(id) + "\"}");
-                return;
-            }
-            ctx.contentType("application/json");
-            ctx.result(TrainJsonUtil.lineToJson(l));
-        });
-
-        app.delete("/api/train-lines/{id}", ctx -> {
-            String id = ctx.pathParam("id");
-            boolean removed = TrainMetadataStorage.get().deleteLine(id);
-            if (!removed) {
-                ctx.status(404);
-                ctx.result("{\"error\":\"line not found: " + JsonUtil.quote(id) + "\"}");
-                return;
-            }
-            ctx.contentType("application/json");
-            ctx.result("{\"removed\":" + JsonUtil.quote(id) + "}");
+            ctx.result(TrainJsonUtil.linesToJson(lines));
         });
     }
 
-    // ---------- station tags ----------
+    // ---------- station tags (read-only when CRN present) ----------
 
     private static void registerStationTagRoutes(Javalin app) {
         app.get("/api/station-tags", ctx -> {
+            CrnBridge crn = CrnBridge.get();
+            List<StationTag> tags = crn.isPresent()
+                    ? crn.stationTags()
+                    : TrainMetadataStorage.get().allStationTags();
             ctx.contentType("application/json");
-            ctx.result(TrainJsonUtil.stationTagsToJson(TrainMetadataStorage.get().allStationTags()));
-        });
-
-        app.post("/api/station-tags", ctx -> {
-            if (!TrainMetadataStorage.get().isInitialized()) { ctx.status(503); return; }
-            String body = ctx.body();
-            String name = JsonUtil.extractStringField(body, "name");
-            String type = JsonUtil.extractStringField(body, "type");
-            int color = JsonUtil.extractIntField(body, "color", 0);
-            if (name == null || name.isBlank()) {
-                ctx.status(400);
-                ctx.result("{\"error\":\"name is required\"}");
-                return;
-            }
-            StationTag t = TrainMetadataStorage.get().createStationTag(name, type, color);
-            ctx.contentType("application/json");
-            ctx.result(TrainJsonUtil.stationTagToJson(t));
-        });
-
-        app.put("/api/station-tags/{id}", ctx -> {
-            if (!TrainMetadataStorage.get().isInitialized()) { ctx.status(503); return; }
-            String id = ctx.pathParam("id");
-            String body = ctx.body();
-            String name = JsonUtil.extractStringField(body, "name");
-            String type = JsonUtil.extractStringField(body, "type");
-            int color = JsonUtil.extractIntField(body, "color", 0);
-            StationTag t = TrainMetadataStorage.get().updateStationTag(id, name, type, color);
-            if (t == null) {
-                ctx.status(404);
-                ctx.result("{\"error\":\"station tag not found: " + JsonUtil.quote(id) + "\"}");
-                return;
-            }
-            ctx.contentType("application/json");
-            ctx.result(TrainJsonUtil.stationTagToJson(t));
-        });
-
-        app.delete("/api/station-tags/{id}", ctx -> {
-            String id = ctx.pathParam("id");
-            boolean removed = TrainMetadataStorage.get().deleteStationTag(id);
-            if (!removed) {
-                ctx.status(404);
-                ctx.result("{\"error\":\"station tag not found: " + JsonUtil.quote(id) + "\"}");
-                return;
-            }
-            ctx.contentType("application/json");
-            ctx.result("{\"removed\":" + JsonUtil.quote(id) + "}");
+            ctx.result(TrainJsonUtil.stationTagsToJson(tags));
         });
     }
 
