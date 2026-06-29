@@ -868,6 +868,7 @@ html, body {
     cursor: pointer;
     transition: background 0.15s, border-color 0.15s, color 0.15s;
     white-space: nowrap;
+    text-decoration: none;
 }
 .topbar-btn:hover { background: var(--bg-3); color: var(--text-0); }
 .topbar-btn[aria-pressed="true"] {
