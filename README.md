@@ -4,7 +4,7 @@ A **Create 6.0.10** addon for **Minecraft 1.21.1** on **NeoForge**. Adds a per-D
 "Web" toggle that mirrors **any** Create Display Source output to a local browser dashboard
 in real time — no custom source needed, every existing source just works.
 
-Current version: **0.7.0** · License: **MIT** · Sync: **server-required, client-optional**.
+Current version: **0.7.1** · License: **MIT** · Sync: **server-required, client-optional**.
 
 ## What it does
 
@@ -20,6 +20,12 @@ The mod does **not** register its own DisplaySource. It uses a Mixin to wrap
 The toggle is a single NBT boolean (`WebSynced`) on the link's `sourceConfig`, synced via
 Create's own configuration packet — no custom networking.
 
+As of **0.7.1**, the dashboard also ships a **train dispatch map** (`/trains.html`) that
+mirrors Create's railway network in real time — live train positions on a hand-drawn SVG
+map, route search, and arrival/departure records. When [Create Railways Navigator](https://www.curseforge.com/minecraft/mc-mods/create-railways-navigator)
+(CRN) is installed, categories / lines / station tags are synced from CRN read-only and
+route search resolves station tags to multiple underlying Create stations.
+
 ## For players
 
 ### Install
@@ -27,8 +33,11 @@ Create's own configuration packet — no custom networking.
 1. Install Minecraft 1.21.1 + [NeoForge 21.1.219](https://neoforged.net/).
 2. Install [Create 6.0.10](https://www.curseforge.com/minecraft/mc-mods/create) and
    [Ponder 1.0.82](https://www.curseforge.com/minecraft/mc-mods/ponder).
-3. Drop `create_web_board-1.21.1-*.jar` into your `mods/` folder.
-4. Launch the game.
+3. (Optional, recommended for the train map) Install
+   [Create Railways Navigator 0.9.0+](https://www.curseforge.com/minecraft/mc-mods/create-railways-navigator)
+   — enables CRN-synced categories / lines / station tags and tag-based route search.
+4. Drop `create_web_board-1.21.1-*.jar` into your `mods/` folder.
+5. Launch the game.
 
 **Server vs. client**: the mod is **server-required, client-optional**. A dedicated server
 must have it installed; clients without it can still join (the toggle button simply won't
@@ -64,6 +73,25 @@ renders item icons and uploads them to the dashboard (see *Icon rendering* below
   2σ from the mean, when there are ≥6 samples). Pure SVG, no JS chart library, works offline.
 - **Real-time** — WebSocket push on every change, plus 5 s REST polling fallback and
   exponential-backoff reconnect.
+- **Train dispatch map** (`/trains.html`, new in 0.7.1) — a separate page that mirrors the
+  Create railway network in real time. Single-page layout with a hand-drawn SVG map and a
+  collapsible sidebar:
+  - **Map pane** — live train positions, track graph nodes/edges, and stations, all on one
+    hand-drawn SVG (no map library — keeps the jar slim). Train positions refresh every
+    0.5 s, topology every 10 s.
+  - **Train list & detail** — online trains with status/speed/heading; click one to see
+    carriages, navigation target, and per-train user metadata (display name, category,
+    line, color, notes).
+  - **Route search** — bounded-depth k-shortest-paths DFS over the live track graph. When
+    CRN is present, the from/to selectors use **station tags** (which group multiple
+    underlying Create stations); search expands a tag to all its stations and finds the
+    shortest path from any origin to any destination.
+  - **Departure records** — arrivals/departures auto-detected by diffing each train's
+    `navigating` flag between poll cycles (works with or without CRN). Each station keeps
+    a 100-entry ring buffer; the section auto-refreshes every 5 s while open.
+  - **Metadata** (read-only) — categories / lines / station tags, synced from CRN's
+    `GlobalSettings` every 10 s via reflection. Managed in-game through CRN, not on the
+    web page. Falls back to local storage when CRN is absent.
 
 ### Configure
 
@@ -129,6 +157,29 @@ All endpoints under `http://localhost:8080`. JSON in/out unless noted.
 
 `role` ∈ `producer` (default) / `consumer` / `storage`. `lineIndex` defaults to 0.
 
+**Trains** (live data, read-only — served from `TrainMirrorService`)
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/trains` | All live train snapshots (position, speed, heading, status, navigation target, carriages) |
+| GET | `/api/trains/by-id/{id}` | Single train snapshot; 404 if missing |
+| GET | `/api/trains/graph` | Current track-graph topology (nodes, edges, stations) |
+| GET | `/api/trains/health` | `{"status":"ok","trains":N,"crn":"detected"/"absent","crnLines":M,"departures":K}` |
+| GET | `/api/routes/search?from=...&to=...&maxResults=...` | Bounded-depth k-shortest-paths DFS. `from`/`to` accept a CRN station tag name (expanded to all its stations) or a raw Create station name. Returns hops, total distance, estimated travel time. |
+| GET | `/api/departures?station=...&limit=...` | Recent arrivals/departures at one station (omit `station` for all) |
+| GET | `/api/departures/all?limit=...` | Recent arrivals/departures across all stations |
+
+**Train metadata** (categories / lines / tags read-only from CRN; per-train config writable)
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/train-categories` | Train categories (from CRN `GlobalSettings`; falls back to local storage) |
+| GET | `/api/train-lines` | Train lines (from CRN; falls back to local) |
+| GET | `/api/station-tags` | Station tags (from CRN; falls back to local). Each tag carries `stationNames[]` — the Create station names it groups. |
+| GET | `/api/train-metadata` | Per-train user config for all trains |
+| PUT | `/api/train-metadata/{trainId}` | Upsert per-train config (body `{"displayName","categoryId","lineId","color","notes"}`) |
+| DELETE | `/api/train-metadata/{trainId}` | Delete per-train config |
+
 **Misc**
 
 | Method | Path | Purpose |
@@ -153,6 +204,7 @@ All paths relative to the server working directory.
 |---|---|---|
 | `config/webboard-boards.json` | JSON | Board snapshots + history (200-entry cap per board) + tags + item ids. Debounced 5 s flush, atomic temp-file move. |
 | `config/webboard-networks.json` | JSON | Stress network definitions. Written immediately on every CRUD (atomic move). |
+| `config/webboard-trains.json` | JSON | Per-train user metadata (displayName, categoryId, lineId, color, notes). Written immediately on every CRUD (atomic move). Categories / lines / station tags are also persisted here as a local fallback for when CRN is absent. |
 | `config/webboard-icons/` | dir | Rendered item icon PNGs + `names.json`. 3 s flush. |
 | `config/webboard-icons.zip` | zip | Optional offline icon pack for dedicated servers. |
 | `config/webboard-server.toml` | TOML | Optional host/port/maxWsConnections override. |
@@ -167,7 +219,11 @@ server must have the mod installed, but clients without it can still join withou
 kicked for a version mismatch. The toggle button only renders on clients that have the mod.
 
 Dependencies: `minecraft [1.21.1,1.22)`, `neoforge [21.1.219,)`, `create [6.0.10,)` (all
-required, BOTH sides); `flywheel` and `ponder` optional.
+required, BOTH sides); `flywheel`, `ponder`, and `create_railways_navigator [0.9.0,)` optional.
+CRN is detected at server start via `ModList.get().isLoaded("createrailwaysnavigator")` and
+bridged through reflection (`CrnBridge`) — when present, the train dispatch map syncs CRN's
+categories / lines / station tags read-only; when absent, it degrades to Create-only data
+plus locally-curated metadata.
 
 ### Build
 
@@ -185,15 +241,18 @@ runtime deps.
 gradle test --no-daemon
 ```
 
-Coverage: PNG codec round-trip (9 tests, no GL needed), TOML config loader edge cases
-(8 tests), live Javalin HTTP+WS integration on an ephemeral port (12 tests), board registry
-listener semantics (7 tests), and jar-content sanity checks asserting Javalin/Jetty/kotlin
-classes are actually packaged (4 tests). ~40 tests total, all run in CI without a GPU.
+Coverage: PNG codec round-trip (no GL needed), TOML config loader edge cases, live Javalin
+HTTP+WS integration on an ephemeral port, board registry listener semantics, jar-content
+sanity checks asserting Javalin/Jetty/kotlin classes are actually packaged, train metadata
+storage CRUD + persistence round-trip, route search BFS correctness over snapshot graphs,
+train poller tick-cadence and 8-wind compass bearing math, and departure history ring-buffer
+semantics. **71 tests** total, all run in CI without a GPU.
 
 ### Docs
 
 - [CLAUDE.md](CLAUDE.md) — agent collaboration rules (codegraph lookup, build/test, pitfalls).
 - [docs/PRD.md](docs/PRD.md) — product requirements.
+- [docs/research/train-dispatch-map-prd.md](docs/research/train-dispatch-map-prd.md) — train dispatch map design (0.7.1).
 - [docs/adr/0001-javalin-embedded.md](docs/adr/0001-javalin-embedded.md) — why Javalin is embedded.
 - [CHANGELOG.md](CHANGELOG.md) — version history. Release notes are sourced from this file.
 
