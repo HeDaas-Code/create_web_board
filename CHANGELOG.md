@@ -50,7 +50,7 @@ section of [README.md](README.md).
 ### Changed
 - `HttpServer` now registers `TrainRoutes` and serves `/trains.html` + `/trains.js`.
 - `ServerLifecycle` wires the train module lifecycle: `TrainMetadataStorage.init`,
-  `CrnBridge.subscribeIfPresent`, `TrainPoller.enable` on server start; the reverse
+  `CrnBridge.syncMetadata`, `TrainPoller.enable` on server start; the reverse
   on stop.
 - `neoforge.mods.toml` declares `create_railways_navigator` as an optional
   dependency so users discover the integration.
