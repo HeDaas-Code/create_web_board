@@ -50,3 +50,14 @@ config = "mixins.create_web_board.json"
     type = "optional"
     versionRange = "[1.0.82,)"
     side = "BOTH"
+
+# Create Railways Navigator — optional soft dependency.
+# Detected via reflection at server start (CrnBridge). When present, the train
+# dispatch map subscribes to CRN's event bus for live arrivals/departures and
+# reuses CRN's train categories/lines/station tags. When absent, the map falls
+# back to Create-only data + locally-curated metadata. Never required.
+[[dependencies.create_web_board]]
+    modId = "create_railways_navigator"
+    type = "optional"
+    versionRange = "[0.9.0,)"
+    side = "BOTH"

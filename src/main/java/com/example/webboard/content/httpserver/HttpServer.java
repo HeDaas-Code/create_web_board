@@ -1,6 +1,7 @@
 package com.example.webboard.content.httpserver;
 
 import com.example.webboard.content.registry.BoardRegistry;
+import com.example.webboard.content.train.httpserver.TrainRoutes;
 
 import io.javalin.Javalin;
 import org.slf4j.Logger;
@@ -56,9 +57,12 @@ public class HttpServer {
         registerStaticAsset(app, "/index.html", "/index.html", "text/html; charset=utf-8");
         registerStaticAsset(app, "/style.css", "/style.css", "text/css; charset=utf-8");
         registerStaticAsset(app, "/app.js", "/app.js", "application/javascript; charset=utf-8");
+        registerStaticAsset(app, "/trains.html", "/trains.html", "text/html; charset=utf-8");
+        registerStaticAsset(app, "/trains.js", "/trains.js", "application/javascript; charset=utf-8");
 
         ApiRoutes.register(app, BoardRegistry.get(), hub);
         NetworkRoutes.register(app);
+        TrainRoutes.register(app);
 
         // WebSocket endpoint — clients connect here for live updates.
         app.ws("/ws", ws -> {

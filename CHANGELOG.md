@@ -11,6 +11,51 @@ section of [README.md](README.md).
 
 ---
 
+## [0.7.1] - 2026-06-29
+
+### Added
+- **Train dispatch map** (`/trains.html`): a new dashboard page that mirrors the
+  Create railway network in real time and lets the operator curate train metadata.
+  Hand-drawn SVG map (no map library — keeps the jar slim), 6 tabs:
+  地图 (map) · 分类 (categories) · 线路 (lines) · 标签 (station tags) · 路径 (route search) · 到发 (departures).
+- **TrainPoller**: a server-tick listener that mirrors `Create.RAILWAYS` into MC-free
+  snapshots on a dual frequency — trains every 10 ticks (0.5 s), topology every
+  200 ticks (10 s). All Create API calls are wrapped in try/catch so a railway
+  hiccup can never crash a game tick.
+- **Live data REST API** (read-only, served from `TrainMirrorService`):
+  - `GET /api/trains`, `GET /api/trains/{id}` — live train snapshots (position,
+    speed, heading, status, navigation target, carriage count).
+  - `GET /api/trains/graph` — current track-graph topology (nodes, edges, stations).
+  - `GET /api/trains/health` — service status + CRN bridge status + counters.
+- **CRUD REST API** (persisted to `config/webboard-trains.json`):
+  - `POST/PUT/DELETE /api/train-categories[/{id}]` — train categories
+    (name, color, freightType).
+  - `POST/PUT/DELETE /api/train-lines[/{id}]` — train lines
+    (name, color, categoryId, ordered stationNames).
+  - `POST/PUT/DELETE /api/station-tags[/{id}]` — station tags
+    (name, type, color).
+  - `PUT/DELETE /api/train-metadata/{trainId}` — per-train user config
+    (displayName, categoryId, lineId, color, notes).
+- **Route search**: `GET /api/routes/search?from=...&to=...&maxResults=...` runs a
+  bounded-depth k-shortest-paths DFS over the live track graph and returns hops,
+  total distance, and an estimated travel time.
+- **Departure history**: `GET /api/departures?station=...&limit=...` and
+  `GET /api/departures/all?limit=...`. Each station keeps a 100-entry ring buffer.
+- **CRN soft-dependency bridge** (`CrnBridge`): detects Create Railways Navigator
+  via reflection at server start and subscribes to its event bus when present.
+  v0.7.1 degrades gracefully to polling when CRN is absent or its events are
+  unavailable — the dashboard keeps working with Create-only data.
+- **15 new unit tests** for `TrainPollerMath` (poll-tick cadence + 8-wind compass
+  bearing), bringing the suite to **60 tests** total.
+
+### Changed
+- `HttpServer` now registers `TrainRoutes` and serves `/trains.html` + `/trains.js`.
+- `ServerLifecycle` wires the train module lifecycle: `TrainMetadataStorage.init`,
+  `CrnBridge.subscribeIfPresent`, `TrainPoller.enable` on server start; the reverse
+  on stop.
+- `neoforge.mods.toml` declares `create_railways_navigator` as an optional
+  dependency so users discover the integration.
+
 ## [0.7.0] - 2026-06-28
 
 ### Added

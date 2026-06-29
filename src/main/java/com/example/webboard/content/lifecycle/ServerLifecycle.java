@@ -58,6 +58,12 @@ public final class ServerLifecycle {
         IconPackStorage.get().init();
         // Initialize stress network persistence (user-created network definitions).
         com.example.webboard.content.network.NetworkStorage.get().init();
+        // Initialize train dashboard persistence (categories / lines / tags / metadata).
+        com.example.webboard.content.train.TrainMetadataStorage.get().init();
+        // Best-effort CRN soft-dependency probe — no-op when CRN is absent.
+        com.example.webboard.content.train.CrnBridge.get().subscribeIfPresent();
+        // Start polling Create.RAILWAYS on the game thread (every 0.5s for trains, 10s for topology).
+        com.example.webboard.content.train.TrainPoller.enable();
         httpServer = new HttpServer(cfg, com.example.webboard.content.registry.BoardRegistry.get());
         try {
             httpServer.start();
@@ -73,6 +79,12 @@ public final class ServerLifecycle {
             // Close the database connection before shutting down the HTTP server.
             BoardDatabase.get().close();
             com.example.webboard.content.network.NetworkStorage.get().close();
+            // Flush train metadata to disk and clear in-memory snapshots + departure buffer
+            // so a fresh server start doesn't show stale data from the previous session.
+            com.example.webboard.content.train.TrainPoller.disable();
+            com.example.webboard.content.train.TrainMetadataStorage.get().close();
+            com.example.webboard.content.train.TrainMirrorService.get().close();
+            com.example.webboard.content.train.DepartureHistory.get().clearAll();
             httpServer.stop();
             httpServer = null;
         }

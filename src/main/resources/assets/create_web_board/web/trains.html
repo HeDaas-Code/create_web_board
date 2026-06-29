@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Create Web Board · 调度图</title>
+    <link rel="stylesheet" href="/style.css" />
+    <style>
+        /* Train-dispatch page local styles. Kept inline to avoid touching style.css. */
+        body { margin: 0; background: #0f1115; color: #e6e6e6; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+        .trains-topbar { display: flex; align-items: center; gap: 14px; padding: 8px 16px;
+            background: #16191f; border-bottom: 1px solid #232730; }
+        .trains-topbar .brand { font-weight: 600; font-size: 14px; }
+        .trains-topbar .brand a { color: #6ab7ff; text-decoration: none; }
+        .trains-tabs { display: flex; gap: 4px; margin-left: auto; }
+        .trains-tab { padding: 6px 12px; border: 1px solid #2a2f3a; background: #1a1e25; color: #9aa0aa;
+            border-radius: 6px; cursor: pointer; font-size: 12px; }
+        .trains-tab.active { background: #2a3140; color: #e6e6e6; border-color: #3a4150; }
+        .trains-tab:hover { color: #e6e6e6; }
+        .trains-stat { font-size: 12px; color: #7a808a; }
+        .trains-stat b { color: #e6e6e6; }
+        .trains-status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+            margin-right: 4px; vertical-align: middle; }
+        .dot-ok { background: #4ade80; } .dot-err { background: #ef4444; } .dot-warn { background: #fbbf24; }
+
+        .trains-layout { display: grid; grid-template-columns: 1fr 320px; height: calc(100vh - 49px); }
+        .trains-map-pane { position: relative; overflow: hidden; background: #0a0c10; border-right: 1px solid #232730; }
+        #map-svg { width: 100%; height: 100%; display: block; }
+        .map-edge { stroke: #3a4250; stroke-width: 1.5; fill: none; }
+        .map-station { fill: #fbbf24; stroke: #1a1e25; stroke-width: 1; cursor: pointer; }
+        .map-station:hover { fill: #fde68a; }
+        .map-station-label { fill: #9aa0aa; font-size: 11px; pointer-events: none; }
+        .map-train { cursor: pointer; }
+        .map-train-marker { stroke: #fff; stroke-width: 1; }
+        .map-train-label { fill: #e6e6e6; font-size: 10px; pointer-events: none; }
+        .map-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+            color: #4a5060; font-size: 14px; pointer-events: none; }
+
+        .trains-side { display: flex; flex-direction: column; overflow: hidden; background: #12151b; }
+        .side-section { border-bottom: 1px solid #232730; padding: 10px 12px; }
+        .side-section h3 { margin: 0 0 8px; font-size: 12px; color: #7a808a; text-transform: uppercase;
+            letter-spacing: 0.5px; font-weight: 600; }
+        .train-row { padding: 6px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;
+            display: flex; align-items: center; gap: 6px; }
+        .train-row:hover { background: #1a1e25; }
+        .train-row.selected { background: #1e293b; }
+        .train-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+        .train-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .train-speed { color: #6ab7ff; font-variant-numeric: tabular-nums; }
+        .train-list-scroll { overflow-y: auto; flex: 1; }
+
+        .detail-card { background: #1a1e25; border: 1px solid #2a2f3a; border-radius: 6px;
+            padding: 10px; font-size: 12px; }
+        .detail-card .row { display: flex; justify-content: space-between; padding: 3px 0; }
+        .detail-card .row .k { color: #7a808a; }
+        .detail-card .row .v { color: #e6e6e6; font-variant-numeric: tabular-nums; }
+
+        /* Management tab panes */
+        .pane { display: none; padding: 16px; overflow-y: auto; height: calc(100vh - 49px); }
+        .pane.active { display: block; }
+        .pane h2 { font-size: 16px; margin: 0 0 12px; }
+        .pane h3 { font-size: 13px; color: #9aa0aa; margin: 16px 0 8px; }
+        .crud-form { display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
+        .crud-form input, .crud-form select { background: #1a1e25; border: 1px solid #2a2f3a; color: #e6e6e6;
+            padding: 5px 8px; border-radius: 4px; font-size: 12px; }
+        .crud-form input[type="text"] { min-width: 120px; }
+        .crud-form input[type="color"] { width: 32px; padding: 1px; height: 26px; }
+        .btn { background: #2a3140; color: #e6e6e6; border: 1px solid #3a4150; padding: 5px 10px;
+            border-radius: 4px; cursor: pointer; font-size: 12px; }
+        .btn:hover { background: #323a4a; }
+        .btn-primary { background: #2563eb; border-color: #3b82f6; }
+        .btn-primary:hover { background: #3b82f6; }
+        .btn-danger { background: #7f1d1d; border-color: #991b1b; }
+        .btn-danger:hover { background: #991b1b; }
+        .crud-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+        .crud-table th, .crud-table td { padding: 6px 8px; text-align: left; border-bottom: 1px solid #232730; }
+        .crud-table th { color: #7a808a; font-weight: 600; font-size: 11px; text-transform: uppercase; }
+        .crud-table tr:hover { background: #1a1e25; }
+        .swatch { display: inline-block; width: 12px; height: 12px; border-radius: 2px; vertical-align: middle; margin-right: 4px; }
+
+        .route-result { background: #1a1e25; border: 1px solid #2a2f3a; border-radius: 4px;
+            padding: 8px 10px; margin-bottom: 6px; font-size: 12px; }
+        .route-result .hops { color: #6ab7ff; font-weight: 600; }
+        .route-result .meta { color: #7a808a; font-size: 11px; }
+        .dep-row { display: flex; gap: 8px; padding: 4px 0; font-size: 12px; border-bottom: 1px solid #1a1e25; }
+        .dep-row .ts { color: #7a808a; font-variant-numeric: tabular-nums; width: 60px; }
+        .dep-row .train { color: #e6e6e6; flex: 1; }
+        .dep-row .dir { font-size: 10px; padding: 1px 4px; border-radius: 2px; }
+        .dir-arrival { background: #14532d; color: #4ade80; }
+        .dir-departure { background: #581c87; color: #c084fc; }
+
+        .hint { color: #7a808a; font-size: 11px; margin: 4px 0; }
+        .empty-list { color: #4a5060; font-size: 12px; padding: 12px; text-align: center; }
+    </style>
+</head>
+<body>
+    <header class="trains-topbar">
+        <span class="brand">
+            <a href="/">← 看板</a> · 调度图
+        </span>
+
+        <span class="trains-stat"><b id="stat-trains">0</b> 列车</span>
+        <span class="trains-stat"><b id="stat-stations">0</b> 站点</span>
+        <span class="trains-stat"><b id="stat-edges">0</b> 铁道</span>
+        <span class="trains-stat" title="CRN 软依赖">
+            <span class="trains-status-dot" id="crn-dot"></span>CRN <span id="crn-status">…</span>
+        </span>
+
+        <div class="trains-tabs">
+            <button class="trains-tab active" data-pane="map">地图</button>
+            <button class="trains-tab" data-pane="categories">分类</button>
+            <button class="trains-tab" data-pane="lines">线路</button>
+            <button class="trains-tab" data-pane="tags">标签</button>
+            <button class="trains-tab" data-pane="routes">路径</button>
+            <button class="trains-tab" data-pane="departures">到发</button>
+        </div>
+    </header>
+
+    <!-- Map pane -->
+    <div class="pane active" id="pane-map" style="padding:0;">
+        <div class="trains-layout">
+            <div class="trains-map-pane" id="map-pane">
+                <svg id="map-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+                <div class="map-empty" id="map-empty">暂无铁道数据 — 等待 Create 火车系统加载…</div>
+            </div>
+            <div class="trains-side">
+                <div class="side-section">
+                    <h3>在线列车</h3>
+                    <div id="train-count" class="hint">0 列</div>
+                </div>
+                <div class="train-list-scroll" id="train-list">
+                    <div class="empty-list">无列车</div>
+                </div>
+                <div class="side-section" id="train-detail" hidden>
+                    <h3>列车详情</h3>
+                    <div id="train-detail-body"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Categories pane -->
+    <div class="pane" id="pane-categories">
+        <h2>列车分类</h2>
+        <p class="hint">分类用于在调度图上用颜色区分列车类型（货运 / 客运 / 混合 / 其他）。与 CRN 联动时自动同步。</p>
+        <div class="crud-form">
+            <input type="text" id="cat-name" placeholder="分类名称" maxlength="32" />
+            <input type="color" id="cat-color" value="#3b82f6" title="颜色" />
+            <select id="cat-freight">
+                <option value="freight">货运</option>
+                <option value="passenger">客运</option>
+                <option value="mixed">混合</option>
+                <option value="other">其他</option>
+            </select>
+            <button class="btn btn-primary" id="cat-create">添加</button>
+        </div>
+        <table class="crud-table">
+            <thead><tr><th>名称</th><th>颜色</th><th>类型</th><th></th></tr></thead>
+            <tbody id="cat-tbody"></tbody>
+        </table>
+    </div>
+
+    <!-- Lines pane -->
+    <div class="pane" id="pane-lines">
+        <h2>线路</h2>
+        <p class="hint">线路是有序站点序列，用于路径搜索和时刻表展示。</p>
+        <div class="crud-form">
+            <input type="text" id="line-name" placeholder="线路名称" maxlength="32" />
+            <input type="color" id="line-color" value="#10b981" title="颜色" />
+            <select id="line-category"></select>
+            <button class="btn btn-primary" id="line-create">添加</button>
+        </div>
+        <table class="crud-table">
+            <thead><tr><th>名称</th><th>分类</th><th>站点数</th><th></th></tr></thead>
+            <tbody id="line-tbody"></tbody>
+        </table>
+        <h3>线路站点编辑</h3>
+        <p class="hint">选择一条线路后，可在此添加/移除站点（每行一个站点名，按顺序）。</p>
+        <div class="crud-form">
+            <select id="line-edit-select"></select>
+        </div>
+        <textarea id="line-edit-stations" rows="6" style="width:100%;background:#1a1e25;border:1px solid #2a2f3a;color:#e6e6e6;padding:8px;border-radius:4px;font-size:12px;font-family:monospace;" placeholder="每行一个站点名"></textarea>
+        <div class="crud-form" style="margin-top:6px;">
+            <button class="btn btn-primary" id="line-edit-save">保存站点</button>
+        </div>
+    </div>
+
+    <!-- Tags pane -->
+    <div class="pane" id="pane-tags">
+        <h2>站点标签</h2>
+        <p class="hint">标签用于给站点分组（如：换乘站、终点站、货运站）。</p>
+        <div class="crud-form">
+            <input type="text" id="tag-name" placeholder="标签名称" maxlength="32" />
+            <input type="color" id="tag-color" value="#f59e0b" title="颜色" />
+            <select id="tag-type">
+                <option value="station">车站</option>
+                <option value="signal">信号</option>
+                <option value="redstone">红石</option>
+            </select>
+            <button class="btn btn-primary" id="tag-create">添加</button>
+        </div>
+        <table class="crud-table">
+            <thead><tr><th>名称</th><th>类型</th><th>颜色</th><th></th></tr></thead>
+            <tbody id="tag-tbody"></tbody>
+        </table>
+    </div>
+
+    <!-- Routes pane -->
+    <div class="pane" id="pane-routes">
+        <h2>路径搜索</h2>
+        <p class="hint">基于当前铁道拓扑搜索从 A 站到 B 站的路径。结果按总长度排序。</p>
+        <div class="crud-form">
+            <select id="route-from"><option value="">起点…</option></select>
+            <span style="align-self:center;color:#7a808a;">→</span>
+            <select id="route-to"><option value="">终点…</option></select>
+            <input type="number" id="route-max" value="5" min="1" max="20" style="width:60px;" title="最大结果数" />
+            <button class="btn btn-primary" id="route-search">搜索</button>
+        </div>
+        <div id="route-results"></div>
+    </div>
+
+    <!-- Departures pane -->
+    <div class="pane" id="pane-departures">
+        <h2>到发记录</h2>
+        <p class="hint">最近的列车到站 / 离站事件。CRN 安装时由事件驱动；否则由轮询推断。</p>
+        <div class="crud-form">
+            <select id="dep-station"><option value="">全部站点</option></select>
+            <input type="number" id="dep-limit" value="50" min="1" max="500" style="width:70px;" title="条数" />
+            <button class="btn btn-primary" id="dep-refresh">刷新</button>
+        </div>
+        <div id="dep-list"></div>
+    </div>
+
+    <script src="/trains.js"></script>
+</body>
+</html>
