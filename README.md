@@ -1,5 +1,7 @@
 # Create Web Board
 
+[English](README.md) · [简体中文](README.zh-CN.md)
+
 A **Create 6.0.10** addon for **Minecraft 1.21.1** on **NeoForge**. Adds a per-Display-Link
 "Web" toggle that mirrors **any** Create Display Source output to a local browser dashboard
 in real time — no custom source needed, every existing source just works.
