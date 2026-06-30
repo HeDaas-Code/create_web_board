@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Create Web Board · 调度图</title>
+    <link rel="stylesheet" href="/style.css" />
+    <style>
+        /* Train-dispatch page local styles. Kept inline to avoid touching style.css. */
+        body { margin: 0; background: #0f1115; color: #e6e6e6; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+        .trains-topbar { display: flex; align-items: center; gap: 14px; padding: 8px 16px;
+            background: #16191f; border-bottom: 1px solid #232730; }
+        .trains-topbar .brand { font-weight: 600; font-size: 14px; }
+        .trains-topbar .brand a { color: #6ab7ff; text-decoration: none; }
+        .trains-stat { font-size: 12px; color: #7a808a; }
+        .trains-stat b { color: #e6e6e6; }
+        .trains-status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+            margin-right: 4px; vertical-align: middle; }
+        .dot-ok { background: #4ade80; } .dot-err { background: #ef4444; } .dot-warn { background: #fbbf24; }
+
+        .trains-layout { display: grid; grid-template-columns: 1fr 400px; height: calc(100vh - 49px); }
+        .trains-map-pane { position: relative; overflow: hidden; background: #0a0c10; border-right: 1px solid #232730; }
+        #map-svg { width: 100%; height: 100%; display: block; }
+        .map-edge { stroke: #3a4250; stroke-width: 1.5; fill: none; }
+        .map-station { fill: #fbbf24; stroke: #1a1e25; stroke-width: 1; cursor: pointer; }
+        .map-station:hover { fill: #fde68a; }
+        .map-station-label { fill: #9aa0aa; font-size: 11px; pointer-events: none; }
+        .map-train { cursor: pointer; }
+        .map-train-marker { stroke: #fff; stroke-width: 1; }
+        .map-train-label { fill: #e6e6e6; font-size: 10px; pointer-events: none; }
+        .map-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+            color: #4a5060; font-size: 14px; pointer-events: none; }
+
+        .trains-side { display: flex; flex-direction: column; overflow-y: auto; background: #12151b; }
+        .side-section { border-bottom: 1px solid #232730; }
+        .side-section > h3 { margin: 0; padding: 10px 12px; font-size: 12px; color: #9aa0aa;
+            text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; cursor: pointer;
+            display: flex; align-items: center; justify-content: space-between; user-select: none; }
+        .side-section > h3:hover { color: #e6e6e6; }
+        .side-section > h3 .toggle { font-size: 10px; color: #6a7080; transition: transform 0.15s; }
+        .side-section.open > h3 .toggle { transform: rotate(90deg); }
+        .section-body { display: none; padding: 0 12px 10px; }
+        .side-section.open .section-body { display: block; }
+        .train-row { padding: 6px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;
+            display: flex; align-items: center; gap: 6px; }
+        .train-row:hover { background: #1a1e25; }
+        .train-row.selected { background: #1e293b; }
+        .train-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+        .train-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .train-speed { color: #6ab7ff; font-variant-numeric: tabular-nums; }
+
+        .detail-card { background: #1a1e25; border: 1px solid #2a2f3a; border-radius: 6px;
+            padding: 10px; font-size: 12px; }
+        .detail-card .row { display: flex; justify-content: space-between; padding: 3px 0; }
+        .detail-card .row .k { color: #7a808a; }
+        .detail-card .row .v { color: #e6e6e6; font-variant-numeric: tabular-nums; }
+
+        .crud-form { display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; align-items: center; }
+        .crud-form input, .crud-form select { background: #1a1e25; border: 1px solid #2a2f3a; color: #e6e6e6;
+            padding: 5px 8px; border-radius: 4px; font-size: 12px; }
+        .crud-form input[type="number"] { width: 60px; }
+        .btn { background: #2a3140; color: #e6e6e6; border: 1px solid #3a4150; padding: 5px 10px;
+            border-radius: 4px; cursor: pointer; font-size: 12px; }
+        .btn:hover { background: #323a4a; }
+        .btn-primary { background: #2563eb; border-color: #3b82f6; }
+        .btn-primary:hover { background: #3b82f6; }
+        .crud-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 4px; }
+        .crud-table th, .crud-table td { padding: 4px 6px; text-align: left; border-bottom: 1px solid #232730; }
+        .crud-table th { color: #7a808a; font-weight: 600; font-size: 11px; text-transform: uppercase; }
+        .crud-table tr:hover { background: #1a1e25; }
+        .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: middle; margin-right: 4px; }
+
+        .route-result { background: #1a1e25; border: 1px solid #2a2f3a; border-radius: 4px;
+            padding: 8px 10px; margin-bottom: 6px; font-size: 12px; }
+        .route-result .hops { color: #6ab7ff; font-weight: 600; }
+        .route-result .meta { color: #7a808a; font-size: 11px; }
+        .dep-row { display: flex; gap: 8px; padding: 4px 0; font-size: 12px; border-bottom: 1px solid #1a1e25; }
+        .dep-row .ts { color: #7a808a; font-variant-numeric: tabular-nums; width: 56px; flex-shrink: 0; }
+        .dep-row .train { color: #e6e6e6; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .dep-row .dir { font-size: 10px; padding: 1px 4px; border-radius: 2px; flex-shrink: 0; }
+        .dir-arrival { background: #14532d; color: #4ade80; }
+        .dir-departure { background: #581c87; color: #c084fc; }
+
+        .hint { color: #7a808a; font-size: 11px; margin: 4px 0; }
+        .empty-list { color: #4a5060; font-size: 12px; padding: 12px; text-align: center; }
+        .metadata-sub { font-size: 11px; color: #7a808a; margin: 8px 0 4px; text-transform: uppercase; letter-spacing: 0.3px; }
+    </style>
+</head>
+<body>
+    <header class="trains-topbar">
+        <span class="brand">
+            <a href="/">← 看板</a> · 调度图
+        </span>
+
+        <span class="trains-stat"><b id="stat-trains">0</b> 列车</span>
+        <span class="trains-stat"><b id="stat-stations">0</b> 站点</span>
+        <span class="trains-stat"><b id="stat-lines">0</b> 线路</span>
+        <span class="trains-stat" title="CRN 软依赖">
+            <span class="trains-status-dot" id="crn-dot"></span>CRN <span id="crn-status">…</span>
+        </span>
+    </header>
+
+    <div class="trains-layout">
+        <div class="trains-map-pane" id="map-pane">
+            <svg id="map-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+            <div class="map-empty" id="map-empty">暂无铁道数据 — 等待 Create 火车系统加载…</div>
+        </div>
+        <div class="trains-side">
+            <!-- 在线列车 -->
+            <div class="side-section open" id="section-trains">
+                <h3>在线列车 <span class="toggle">▸</span></h3>
+                <div class="section-body">
+                    <div id="train-count" class="hint">0 列</div>
+                    <div id="train-list">
+                        <div class="empty-list">无列车</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 列车详情 -->
+            <div class="side-section" id="section-detail" hidden>
+                <h3>列车详情 <span class="toggle">▸</span></h3>
+                <div class="section-body" id="train-detail-body"></div>
+            </div>
+
+            <!-- 路径搜索 -->
+            <div class="side-section" id="section-routes">
+                <h3>路径搜索 <span class="toggle">▸</span></h3>
+                <div class="section-body">
+                    <div class="crud-form">
+                        <select id="route-from" style="min-width:110px;"><option value="">起点…</option></select>
+                        <span style="color:#7a808a;">→</span>
+                        <select id="route-to" style="min-width:110px;"><option value="">终点…</option></select>
+                        <input type="number" id="route-max" value="5" min="1" max="20" title="最大结果数" />
+                        <button class="btn btn-primary" id="route-search">搜索</button>
+                    </div>
+                    <div id="route-results"></div>
+                </div>
+            </div>
+
+            <!-- 到发记录 -->
+            <div class="side-section" id="section-departures">
+                <h3>到发记录 <span class="toggle">▸</span></h3>
+                <div class="section-body">
+                    <div class="crud-form">
+                        <select id="dep-station" style="min-width:120px;"><option value="">全部站点</option></select>
+                        <input type="number" id="dep-limit" value="30" min="1" max="500" title="条数" />
+                        <button class="btn" id="dep-refresh">刷新</button>
+                    </div>
+                    <div id="dep-list"></div>
+                </div>
+            </div>
+
+            <!-- 线路概况 -->
+            <div class="side-section" id="section-metadata">
+                <h3>线路概况 <span class="toggle">▸</span></h3>
+                <div class="section-body">
+                    <p class="hint">从 CRN 自动同步，只读展示。请在游戏内通过 CRN 界面管理。</p>
+                    <div class="metadata-sub">分类</div>
+                    <table class="crud-table"><tbody id="cat-tbody"></tbody></table>
+                    <div class="metadata-sub">线路</div>
+                    <table class="crud-table"><tbody id="line-tbody"></tbody></table>
+                    <div class="metadata-sub">站点标签</div>
+                    <table class="crud-table"><tbody id="tag-tbody"></tbody></table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/trains.js"></script>
+</body>
+</html>

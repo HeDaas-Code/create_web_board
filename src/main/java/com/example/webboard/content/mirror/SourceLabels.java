@@ -43,7 +43,7 @@ public final class SourceLabels {
         Map.entry("create:computer", "计算机输出"),
         // Common addon mods (best-effort, verify from actual IDs if possible)
         // Addons with DisplaySource support are rare; these are common ones:
-        Map.entry("createrailwaysnavigator:train_display", "列车导航"),
+        Map.entry("createrailwaysnavigator:advanced_display", "列车导航"),
         Map.entry("extremereactors2createcompat:reactor_global_status", "反应堆状态"),
         Map.entry("extremereactors2createcompat:turbine_global_status", "涡轮状态"),
         Map.entry("extremereactors2createcompat:energizer_global_status", "充能器状态")

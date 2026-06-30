@@ -8,6 +8,10 @@ modId = "create_web_board"
 version = "${version}"
 displayName = "Create Web Board"
 authors = "hedaas"
+# Server-required, client-optional: clients without this mod can still connect.
+# IGNORE_SERVER_VERSION lets the client skip the server's mod version check, so
+# no "mod mismatch" disconnect is triggered when the client doesn't have it.
+displayTest = "IGNORE_SERVER_VERSION"
 description = '''
 Adds a "Web" toggle to every Display Link. When enabled, the link's live output is
 mirrored to a local browser dashboard in real time. This file is generated from
@@ -45,4 +49,15 @@ config = "mixins.create_web_board.json"
     modId = "ponder"
     type = "optional"
     versionRange = "[1.0.82,)"
+    side = "BOTH"
+
+# Create Railways Navigator — optional soft dependency.
+# Detected via reflection at server start (CrnBridge). When present, the train
+# dispatch map subscribes to CRN's event bus for live arrivals/departures and
+# reuses CRN's train categories/lines/station tags. When absent, the map falls
+# back to Create-only data + locally-curated metadata. Never required.
+[[dependencies.create_web_board]]
+    modId = "create_railways_navigator"
+    type = "optional"
+    versionRange = "[0.9.0,)"
     side = "BOTH"

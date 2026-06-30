@@ -1,9 +1,16 @@
-# Release workflow: build the mod and attach the .jar to a GitHub Release.
+# Release workflow: build the mod and attach the .jar to a GitHub Release whose body
+# is the matching entry from CHANGELOG.md.
+#
 # Trigger: push of a tag matching v* (e.g. v0.1.0, v0.2.0-rc1).
 # Downloads on the release page are direct .jar — no zip wrapping.
 #
-# Verified 2026-06-26: same gradle build as the regular CI (./gradlew build).
-# The .jar lands in build/libs/create_web_board-1.21.1-*.jar.
+# Release notes policy: the body is extracted from the `## [x.y.z]` section of
+# CHANGELOG.md (everything between that heading and the next `## [` heading, excluding
+# the trailing horizontal rule). If the section is missing the job fails loudly — a
+# release without explicit "what changed" notes is not allowed.
+#
+# Version policy: tags are pushed ONLY when the maintainer explicitly requests a release.
+# Do NOT push v* tags as part of normal feature work — see README.md "Release policy".
 
 name: release
 
@@ -45,6 +52,50 @@ jobs:
           # Strip the leading 'v' from the tag (e.g. v0.1.0 → 0.1.0)
           echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
+      - name: Extract release notes from CHANGELOG.md
+        id: notes
+        run: |
+          set -e
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          echo "Extracting release notes for [${VERSION}] from CHANGELOG.md"
+          #
+          # Match the heading `## [x.y.z] - YYYY-MM-DD` (date optional, so rc/pre-release
+          # entries without a date still work). Capture from the line AFTER the heading
+          # down to (but not including) the next `## [` heading or a standalone `---` rule.
+          # Then trim trailing blank lines and any trailing horizontal rule.
+          NOTES=$(awk -v ver="[${VERSION}]" '
+            BEGIN { in_section = 0 }
+            # Entering the target section: a level-2 heading whose bracketed id matches.
+            /^## \[/ {
+              if (in_section) { exit }       # next ## [ section begins → stop
+              if (index($0, ver) > 0) { in_section = 1; next }
+              next
+            }
+            # Stop at a standalone horizontal rule or the start of an HTML comment block
+            # (e.g. the release-notes template at the bottom of the file).
+            in_section {
+              if ($0 ~ /^---[[:space:]]*$/ || $0 ~ /^<!--/) { exit }
+              print
+            }
+          ' CHANGELOG.md)
+
+          # Trim trailing blank lines.
+          NOTES=$(printf '%s' "$NOTES" | sed -e :a -e '/^[[:space:]]*$/{N;ba}')
+
+          if [ -z "$NOTES" ]; then
+            echo "::error::No \`## [${VERSION}]\` entry found in CHANGELOG.md. Add one before tagging."
+            exit 1
+          fi
+
+          # Persist to a file so the multi-line value survives the GITHUB_OUTPUT round-trip.
+          printf '%s' "$NOTES" > /tmp/release-notes.md
+          echo "notes<<EOF" >> "$GITHUB_OUTPUT"
+          cat /tmp/release-notes.md >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+          echo "----- Extracted release notes (${#NOTES} chars) -----"
+          cat /tmp/release-notes.md
+          echo "---------------------------------------------------"
+
       - name: Sanity-check mods.toml
         run: |
           set -e
@@ -60,7 +111,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: "v${{ steps.version.outputs.VERSION }}"
-          generate_release_notes: true
+          # Body comes from the CHANGELOG.md entry extracted above — NOT GitHub's
+          # auto-generated commit/PR list. Every release must say what changed.
+          body: ${{ steps.notes.outputs.notes }}
           files: |
             build/libs/*.jar
           # Do NOT zip the artifact — softprops attaches the .jar directly, and the

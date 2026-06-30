@@ -112,76 +112,71 @@ public final class ItemIconRenderer {
             ensureFbo();
             fbo.bindWrite(true);
             RenderSystem.clearColor(0, 0, 0, 0);
-            RenderSystem.clear(GlConst.GL_COLOR_BUFFER_BIT, false);
+            // Clear BOTH color and depth. The FBO has a depth attachment (TextureTarget with
+            // useDepth=true) but we were only clearing color — stale/garbage depth values caused
+            // every fragment to fail the depth test, producing blank (fully transparent) icons.
+            RenderSystem.clear(GlConst.GL_COLOR_BUFFER_BIT | GL11.GL_DEPTH_BUFFER_BIT, false);
 
-            // ---- Save all GL state we're about to touch ----
-            // The dashboard's item icons were coming out blank because GuiGraphics.renderItem's
-            // shaders read RenderSystem.getModelViewMatrix() at flush time — but we never set it,
-            // so the item's vertices were multiplied by whatever matrix the previous frame left
-            // behind (usually a large translate), throwing every vertex off-screen. The fix is to
-            // replicate what vanilla's GameRenderer does at the start of each GUI frame:
-            //   1. Set an ortho projection matching the FBO size.
-            //   2. Reset the model-view stack to identity and apply it to the GPU.
-            //   3. Enable depth test + blend (ItemRenderer toggles these internally, but starting
-            //      from a known state avoids contamination from the previous frame).
-            //   4. Set up 3D item lighting (without it, shaded block items render black/blank).
-            //   5. Disable scissor (the main window's scissor box would cull our 32×32 render).
-            // All of this is saved + restored so the rest of the frame is unaffected.
+            // ---- Save + set GL state ----
+            // ItemRenderer's shaders read RenderSystem.getModelViewMatrix() at flush time.
+            // We replicate vanilla's GUI frame setup: ortho projection, identity model-view,
+            // depth test + blend, 3D item lighting, scissor off. All saved + restored below.
             Matrix4f savedProjection = RenderSystem.getProjectionMatrix();
             RenderSystem.setProjectionMatrix(
-                    // near=1000, far=21000 matches vanilla's GUI projection (GameRenderer.GUI_Z_NEAR).
-                    // Our earlier 1000..3000 was too narrow and clipped the item's default z offset.
                     new Matrix4f().setOrtho(0, ICON_SIZE, ICON_SIZE, 0, 1000, 21000),
                     VertexSorting.ORTHOGRAPHIC_Z);
 
-            // 1.21.1: RenderSystem.getModelViewStack() returns org.joml.Matrix4fStack (not
-            // PoseStack — that changed in the 1.20.5 JOML migration). Matrix4fStack uses
-            // pushMatrix/popMatrix instead of PoseStack's pushPose/popPose; identity() is
-            // inherited from Matrix4f. applyModelViewMatrix() signature is unchanged.
+            // 1.21.1: RenderSystem.getModelViewStack() returns org.joml.Matrix4fStack.
             Matrix4fStack mvStack = RenderSystem.getModelViewStack();
             mvStack.pushMatrix();
-            mvStack.identity();
-            RenderSystem.applyModelViewMatrix();
-
             boolean depthWasOn = GL11.glIsEnabled(GL11.GL_DEPTH_TEST);
-            RenderSystem.enableDepthTest();
             boolean blendWasOn = GL11.glIsEnabled(GL11.GL_BLEND);
-            RenderSystem.enableBlend();
-            RenderSystem.defaultBlendFunc();
-            RenderSystem.setShaderColor(1f, 1f, 1f, 1f);
-
-            Lighting.setupFor3DItems();
-
             boolean scissorWasOn = GL11.glIsEnabled(GL11.GL_SCISSOR_TEST);
-            if (scissorWasOn) GL11.glDisable(GL11.GL_SCISSOR_TEST);
 
-            Minecraft mc = Minecraft.getInstance();
-            // Use a fresh BufferSource instead of the shared mc.renderBuffers().bufferSource():
-            // the shared one may hold pending vertices from earlier in the frame; flushing those
-            // into our 32×32 FBO would pollute the icon. A private source is flushed and discarded.
-            // 1.21.1: BufferSource's constructor is protected, so use MultiBufferSource.immediate(...)
-            // (the static factory) instead of `new BufferSource(...)`.
-            ByteBufferBuilder builder = new ByteBufferBuilder(256);
-            MultiBufferSource.BufferSource bufSrc = MultiBufferSource.immediate(builder);
-            GuiGraphics gg = new GuiGraphics(mc, bufSrc);
-            PoseStack pose = gg.pose();
-            pose.pushPose();
-            // renderItem draws a 16×16 icon; scale ×2 so it fills the 32×32 FBO exactly.
-            pose.scale(2, 2, 1);
-            gg.renderItem(stack, 0, 0);
-            gg.flush();
-            bufSrc.endBatch();
-            builder.close();
-            pose.popPose();
+            try {
+                mvStack.identity();
+                RenderSystem.applyModelViewMatrix();
+                RenderSystem.enableDepthTest();
+                RenderSystem.enableBlend();
+                RenderSystem.defaultBlendFunc();
+                RenderSystem.setShaderColor(1f, 1f, 1f, 1f);
+                Lighting.setupFor3DItems();
+                if (scissorWasOn) GL11.glDisable(GL11.GL_SCISSOR_TEST);
 
-            // ---- Restore all GL state ----
-            Lighting.setupForFlatItems();
-            if (scissorWasOn) GL11.glEnable(GL11.GL_SCISSOR_TEST);
-            if (!depthWasOn) RenderSystem.disableDepthTest();
-            if (!blendWasOn) RenderSystem.disableBlend();
-            mvStack.popMatrix();
-            RenderSystem.applyModelViewMatrix();
-            RenderSystem.setProjectionMatrix(savedProjection, VertexSorting.ORTHOGRAPHIC_Z);
+                Minecraft mc = Minecraft.getInstance();
+                // Fresh BufferSource (not the shared mc.renderBuffers().bufferSource()) so
+                // pending vertices from earlier in the frame don't pollute the icon.
+                ByteBufferBuilder builder = new ByteBufferBuilder(256);
+                MultiBufferSource.BufferSource bufSrc = MultiBufferSource.immediate(builder);
+                GuiGraphics gg = new GuiGraphics(mc, bufSrc);
+                PoseStack pose = gg.pose();
+                pose.pushPose();
+                // CRITICAL: push items deep into -Z so they fall inside the ortho frustum.
+                // setOrtho(0,32,32,0, 1000, 21000) makes visible eye-space z ∈ [-21000, -1000].
+                // GuiGraphics.renderItem internally translates to z≈+150, which is OUTSIDE
+                // the frustum → every vertex is clipped by the near plane → blank icon.
+                // Translating to -8000 puts the item safely in the middle of the frustum.
+                pose.translate(0, 0, -8000);
+                // renderItem draws 16×16; scale ×2 to fill the 32×32 FBO.
+                pose.scale(2, 2, 1);
+                gg.renderItem(stack, 0, 0);
+                gg.flush();
+                bufSrc.endBatch();
+                pose.popPose();
+                builder.close();
+            } finally {
+                // CRITICAL: always restore GL state, even if renderItem threw.
+                // Without popMatrix here, a ReportedException leaves the model-view stack
+                // pushed but never popped — after 16 leaks the game crashes with
+                // "max stack size of 16 reached" (issue #11).
+                Lighting.setupForFlatItems();
+                if (scissorWasOn) GL11.glEnable(GL11.GL_SCISSOR_TEST);
+                if (!depthWasOn) RenderSystem.disableDepthTest();
+                if (!blendWasOn) RenderSystem.disableBlend();
+                mvStack.popMatrix();
+                RenderSystem.applyModelViewMatrix();
+                RenderSystem.setProjectionMatrix(savedProjection, VertexSorting.ORTHOGRAPHIC_Z);
+            }
 
             byte[] png = readFboToPng();
             fbo.unbindWrite();

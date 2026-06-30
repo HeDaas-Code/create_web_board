@@ -64,6 +64,9 @@ public final class IconUploadService {
     private static volatile int uploadedCount = 0;
     private static volatile int skippedCount = 0;
 
+    /** True if we temporarily disabled Iris shaders during the render pass (restored on finish). */
+    private static boolean irisShadersDisabled = false;
+
     private IconUploadService() {}
 
     private record RenderedItem(String id, String name, byte[] png) {}
@@ -105,10 +108,15 @@ public final class IconUploadService {
         httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(2))
                 .build();
+        // Iris shaderpack replaces vanilla RenderType shaders with its own gbuffer programs.
+        // When active, off-screen FBO item renders produce garbage (wrong uniforms, missing
+        // samplers). Temporarily disable shaders for the entire batch, restore when done.
+        disableIrisShaders();
     }
 
     /** Reset state so the next world join starts a fresh pass. Called on disconnect. */
     public static void reset() {
+        enableIrisShaders();
         started.set(false);
         done.set(false);
         uploadQueue.clear();
@@ -140,6 +148,7 @@ public final class IconUploadService {
         // Done? Wait for the upload queue to flush too.
         if (pendingIds.isEmpty() && uploadQueue.isEmpty()) {
             done.set(true);
+            enableIrisShaders();
             LOGGER.info("[web_board] icon render+upload complete: {} uploaded, {} skipped",
                     uploadedCount, skippedCount);
         }
@@ -174,5 +183,45 @@ public final class IconUploadService {
             b.header("X-Item-Name", URLEncoder.encode(item.name(), StandardCharsets.UTF_8));
         }
         return b.build();
+    }
+
+    // ---- Iris shaderpack compatibility ----
+    // Iris replaces vanilla RenderType shaders with its own gbuffer programs that expect
+    // Iris-specific uniforms (cameraPosition, colortex samplers, etc.). When rendering items
+    // off-screen in our own FBO, those uniforms are stale/missing → garbage output.
+    // We use reflection (Iris is an optional dependency) to temporarily disable shaders for
+    // the entire batch, then restore when done. setShadersEnabledAndApply triggers a reload,
+    // so we only toggle once per batch — not per item.
+
+    private static void disableIrisShaders() {
+        try {
+            Class<?> irisApi = Class.forName("net.irisshaders.iris.api.v0.IrisApi");
+            Object instance = irisApi.getMethod("getInstance").invoke(null);
+            boolean inUse = (boolean) irisApi.getMethod("isShaderPackInUse").invoke(instance);
+            if (inUse) {
+                Object config = irisApi.getMethod("getConfig").invoke(instance);
+                config.getClass().getMethod("setShadersEnabledAndApply", boolean.class).invoke(config, false);
+                irisShadersDisabled = true;
+                LOGGER.info("[web_board] Iris shaderpack detected — temporarily disabled for icon rendering");
+            }
+        } catch (ClassNotFoundException ignored) {
+            // Iris not installed — nothing to do.
+        } catch (Throwable t) {
+            LOGGER.warn("[web_board] Failed to disable Iris shaders: {}", t.toString());
+        }
+    }
+
+    private static void enableIrisShaders() {
+        if (!irisShadersDisabled) return;
+        irisShadersDisabled = false;
+        try {
+            Class<?> irisApi = Class.forName("net.irisshaders.iris.api.v0.IrisApi");
+            Object instance = irisApi.getMethod("getInstance").invoke(null);
+            Object config = irisApi.getMethod("getConfig").invoke(instance);
+            config.getClass().getMethod("setShadersEnabledAndApply", boolean.class).invoke(config, true);
+            LOGGER.info("[web_board] Iris shaders re-enabled");
+        } catch (Throwable t) {
+            LOGGER.warn("[web_board] Failed to re-enable Iris shaders: {}", t.toString());
+        }
     }
 }

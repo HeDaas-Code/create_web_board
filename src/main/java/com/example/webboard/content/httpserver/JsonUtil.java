@@ -146,6 +146,106 @@ public final class JsonUtil {
         return result;
     }
 
+    /**
+     * Extract an int field's value from a small JSON object. Returns {@code defaultValue} if
+     * the field is absent or not parseable as an int. Controlled-input parser for the
+     * dashboard API payloads (e.g. network member lineIndex).
+     */
+    public static int extractIntField(String json, String field, int defaultValue) {
+        if (json == null) return defaultValue;
+        String needle = "\"" + field + "\"";
+        int i = json.indexOf(needle);
+        if (i < 0) return defaultValue;
+        i += needle.length();
+        while (i < json.length()) {
+            char c = json.charAt(i);
+            if (c == ':') { i++; break; }
+            if (Character.isWhitespace(c)) { i++; continue; }
+            return defaultValue;
+        }
+        while (i < json.length() && Character.isWhitespace(json.charAt(i))) i++;
+        int start = i;
+        if (i < json.length() && (json.charAt(i) == '-' || json.charAt(i) == '+')) i++;
+        while (i < json.length() && Character.isDigit(json.charAt(i))) i++;
+        if (start == i) return defaultValue;
+        try {
+            return Integer.parseInt(json.substring(start, i));
+        } catch (NumberFormatException e) {
+            return defaultValue;
+        }
+    }
+
+    /**
+     * Extract a JSON array of objects from a field, returning each object as a raw JSON
+     * substring (e.g. {@code {"boardName":"...","role":"..."}}). Used to parse network member
+     * arrays from API request bodies. Returns an empty list if the field is absent or malformed.
+     */
+    public static java.util.List<String> extractObjectArrayField(String json, String field) {
+        java.util.List<String> result = new java.util.ArrayList<>();
+        if (json == null) return result;
+        String needle = "\"" + field + "\"";
+        int i = json.indexOf(needle);
+        if (i < 0) return result;
+        i += needle.length();
+        while (i < json.length()) {
+            char c = json.charAt(i);
+            if (c == ':') { i++; break; }
+            if (Character.isWhitespace(c)) { i++; continue; }
+            return result;
+        }
+        while (i < json.length() && Character.isWhitespace(json.charAt(i))) i++;
+        if (i >= json.length() || json.charAt(i) != '[') return result;
+        i++; // skip '['
+        while (i < json.length()) {
+            while (i < json.length() && Character.isWhitespace(json.charAt(i))) i++;
+            if (i >= json.length() || json.charAt(i) == ']') break;
+            if (json.charAt(i) != '{') break;
+            // Find matching '}' accounting for nested strings
+            int depth = 0;
+            int start = i;
+            while (i < json.length()) {
+                char c = json.charAt(i);
+                if (c == '"') {
+                    // Skip the entire string
+                    i++;
+                    while (i < json.length()) {
+                        char sc = json.charAt(i++);
+                        if (sc == '\\' && i < json.length()) { i++; continue; }
+                        if (sc == '"') break;
+                    }
+                    continue;
+                }
+                if (c == '{') depth++;
+                else if (c == '}') { depth--; if (depth == 0) { i++; break; } }
+                i++;
+            }
+            result.add(json.substring(start, i));
+            while (i < json.length() && Character.isWhitespace(json.charAt(i))) i++;
+            if (i < json.length() && json.charAt(i) == ',') { i++; continue; }
+            break;
+        }
+        return result;
+    }
+
+    /** Serialize a {@code NetworkDefinition} to its JSON object form. */
+    public static String networkToJson(com.example.webboard.content.network.NetworkDefinition net) {
+        StringBuilder sb = new StringBuilder("{\"id\":").append(quote(net.id()))
+                .append(",\"name\":").append(quote(net.name()))
+                .append(",\"members\":[");
+        boolean first = true;
+        for (var m : net.members()) {
+            if (!first) sb.append(',');
+            first = false;
+            sb.append("{\"boardName\":").append(quote(m.boardName()))
+              .append(",\"role\":").append(quote(m.role()))
+              .append(",\"label\":").append(quote(m.label()))
+              .append(",\"lineIndex\":").append(m.lineIndex())
+              .append('}');
+        }
+        sb.append("]}");
+        return sb.toString();
+    }
+
     /** Serialize a {@code BoardContent} to its JSON object form (no enclosing braces wrapping). */
     public static String boardToJson(com.example.webboard.content.registry.BoardContent b) {
         StringBuilder sb = new StringBuilder("{\"name\":").append(quote(b.name()))

@@ -868,6 +868,7 @@ html, body {
     cursor: pointer;
     transition: background 0.15s, border-color 0.15s, color 0.15s;
     white-space: nowrap;
+    text-decoration: none;
 }
 .topbar-btn:hover { background: var(--bg-3); color: var(--text-0); }
 .topbar-btn[aria-pressed="true"] {
@@ -1139,4 +1140,380 @@ html, body {
     .group-grid { grid-template-columns: 1fr; gap: 12px; }
     .item-picker-grid { grid-template-columns: 1fr; }
     .topbar-btn span { display: none; }
+}
+
+/* ---------- View toggle / new-network button ---------- */
+
+#new-network-btn[hidden] { display: none; }
+.topbar-btn[hidden] { display: none; }
+
+/* ---------- Network card ---------- */
+
+.net-card {
+    /* reuses .card base; only network-specific tweaks here */
+}
+.net-stats {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+    padding: 12px 16px 8px;
+}
+.net-stats.with-storage {
+    grid-template-columns: repeat(2, 1fr);
+}
+.net-storage-row {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    margin-top: 4px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 12px;
+    color: var(--text-1);
+}
+.net-storage-row .net-stat-label {
+    color: var(--text-2);
+    font-size: 11px;
+}
+.net-storage-row .net-stat-value {
+    margin-left: auto;
+    color: var(--text-0);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.net-stat {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 10px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+.net-stat-label {
+    font-size: 11px;
+    color: var(--text-2);
+    letter-spacing: 0.02em;
+}
+.net-stat-value {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-0);
+    font-variant-numeric: tabular-nums;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.net-stat.produce { border-color: rgba(78, 201, 176, 0.3); }
+.net-stat.produce .net-stat-value { color: var(--ok); }
+.net-stat.consume { border-color: rgba(250, 162, 27, 0.3); }
+.net-stat.consume .net-stat-value { color: var(--accent); }
+/* surplus stat 已移除：剩余应力改由 storage 成员实测值代表，不再用 surplus=产−消 派生 */
+
+.net-members {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 16px 12px;
+    list-style: none;
+    margin: 0;
+    max-height: 240px;
+    overflow: auto;
+}
+.net-member {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--bg-2);
+    border: 1px solid var(--border-soft);
+    border-radius: 6px;
+    font-size: 12px;
+}
+.net-member .member-dot {
+    flex: 0 0 auto;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+}
+.net-member .member-dot.role-producer { background: var(--ok); }
+.net-member .member-dot.role-consumer { background: var(--accent); }
+.net-member .member-dot.role-storage { background: #5aa9ff; }
+.net-member .member-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-0);
+}
+.net-member .member-value {
+    flex: 0 0 auto;
+    color: var(--text-1);
+    font-variant-numeric: tabular-nums;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 12px;
+}
+.net-member .member-value.stale { color: var(--text-3); font-style: italic; }
+.role-badge {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    height: 18px;
+    padding: 0 7px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    border: 1px solid transparent;
+}
+.role-badge.role-producer {
+    background: rgba(78, 201, 176, 0.12);
+    border-color: rgba(78, 201, 176, 0.3);
+    color: var(--ok);
+}
+.role-badge.role-consumer {
+    background: rgba(250, 162, 27, 0.12);
+    border-color: rgba(250, 162, 27, 0.3);
+    color: var(--accent);
+}
+.role-badge.role-storage {
+    background: rgba(90, 169, 255, 0.12);
+    border-color: rgba(90, 169, 255, 0.3);
+    color: #5aa9ff;
+}
+.net-card-foot {
+    padding: 8px 16px;
+    border-top: 1px solid var(--border-soft);
+    background: var(--bg-1);
+    color: var(--text-2);
+    font-size: 11px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.net-card-foot .foot-time {
+    margin-left: auto;
+    color: var(--text-3);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+/* ---------- Network modal ---------- */
+
+#network-modal .net-stats {
+    padding: 0;
+}
+#network-modal .net-members {
+    padding: 0;
+    max-height: 320px;
+}
+#network-modal .net-member {
+    background: var(--bg-0);
+}
+
+/* ---------- Network editor modal ---------- */
+
+.net-editor-name-input {
+    width: 100%;
+    height: 34px;
+    padding: 0 12px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-0);
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+    margin-bottom: 12px;
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+.net-editor-name-input:focus {
+    border-color: var(--accent-dim);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.net-editor-members-head {
+    margin-bottom: 8px;
+}
+.net-editor-members {
+    max-height: 44vh;
+    overflow: auto;
+    padding: 0;
+    gap: 6px;
+}
+.net-editor-members .net-member {
+    flex-wrap: wrap;
+    background: var(--bg-0);
+    padding: 8px 10px;
+}
+.net-member-editor-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    flex-wrap: wrap;
+}
+.net-member-board {
+    flex: 1;
+    min-width: 120px;
+    color: var(--text-0);
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.net-member-role {
+    height: 28px;
+    padding: 0 8px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-0);
+    font-size: 12px;
+    font-family: inherit;
+    outline: none;
+    cursor: pointer;
+}
+.net-member-label-input,
+.net-member-line-input {
+    height: 28px;
+    padding: 0 8px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-0);
+    font-size: 12px;
+    font-family: inherit;
+    outline: none;
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+.net-member-label-input { width: 120px; }
+.net-member-line-input { width: 56px; font-variant-numeric: tabular-nums; }
+.net-member-label-input:focus,
+.net-member-line-input:focus,
+.net-member-role:focus {
+    border-color: var(--accent-dim);
+    box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.net-member-remove {
+    flex: 0 0 auto;
+    width: 26px;
+    height: 26px;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-2);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.net-member-remove:hover {
+    color: var(--err);
+    border-color: var(--err);
+    background: rgba(244, 135, 113, 0.1);
+}
+.net-editor-empty {
+    padding: 18px;
+    text-align: center;
+    color: var(--text-3);
+    font-size: 12px;
+    font-style: italic;
+    background: var(--bg-0);
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+}
+
+/* ---------- Board picker modal ---------- */
+
+.board-picker-overlay { z-index: 70; }   /* above network editor (60) — modal-over-modal-over-modal */
+.board-picker-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    overflow: auto;
+    max-height: 56vh;
+    padding: 2px;
+}
+.board-picker-card {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg-2);
+    cursor: pointer;
+    transition: border-color 0.12s, background 0.12s;
+}
+.board-picker-card:hover {
+    background: var(--bg-3);
+    border-color: var(--accent-dim);
+}
+.board-picker-card .picker-name {
+    flex: 1;
+    min-width: 0;
+    color: var(--text-0);
+    font-size: 13px;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.board-picker-card .picker-source {
+    flex: 0 0 auto;
+    font-size: 11px;
+    color: var(--text-2);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    padding: 2px 7px;
+    background: var(--bg-3);
+    border-radius: 4px;
+}
+.board-picker-card .picker-add {
+    flex: 0 0 auto;
+    color: var(--accent);
+    font-size: 14px;
+}
+.board-picker-empty {
+    text-align: center;
+    color: var(--text-3);
+    padding: 30px 0;
+    font-size: 13px;
+}
+
+/* ---------- Enhanced chart overlays ---------- */
+
+.chart-mean-line {
+    stroke-width: 1.2;
+    stroke-dasharray: 5 4;
+    fill: none;
+    opacity: 0.7;
+}
+.chart-mean-label {
+    font-size: 10px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.chart-anomaly {
+    stroke: var(--err);
+    stroke-width: 1.5;
+}
+.chart-rate-annotation {
+    margin-top: 6px;
+    padding: 4px 10px;
+    background: var(--bg-2);
+    border: 1px solid var(--border-soft);
+    border-radius: 6px;
+    color: var(--text-1);
+    font-size: 11px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-variant-numeric: tabular-nums;
+}
+.chart-rate-annotation .rate-up { color: var(--ok); }
+.chart-rate-annotation .rate-down { color: var(--err); }
+.chart-rate-annotation .rate-flat { color: var(--text-2); }
+
+@media (max-width: 720px) {
+    .net-stats { grid-template-columns: repeat(2, 1fr); }
+    .net-member { flex-wrap: wrap; }
 }
