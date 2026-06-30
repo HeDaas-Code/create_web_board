@@ -88,10 +88,14 @@ jobs:
           fi
 
           # Persist to a file so the multi-line value survives the GITHUB_OUTPUT round-trip.
-          printf '%s' "$NOTES" > /tmp/release-notes.md
-          echo "notes<<EOF" >> "$GITHUB_OUTPUT"
-          cat /tmp/release-notes.md >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
+          # Use a unique delimiter to avoid collisions with note content, and ensure the
+          # content ends with a newline so the closing delimiter is on its own line.
+          printf '%s\n' "$NOTES" > /tmp/release-notes.md
+          {
+            echo "notes<<RELEASE_NOTES_DELIMITER"
+            cat /tmp/release-notes.md
+            echo "RELEASE_NOTES_DELIMITER"
+          } >> "$GITHUB_OUTPUT"
           echo "----- Extracted release notes (${#NOTES} chars) -----"
           cat /tmp/release-notes.md
           echo "---------------------------------------------------"
