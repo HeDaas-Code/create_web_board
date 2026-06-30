@@ -258,6 +258,58 @@ semantics. **71 tests** total, all run in CI without a GPU.
 - [docs/adr/0001-javalin-embedded.md](docs/adr/0001-javalin-embedded.md) — why Javalin is embedded.
 - [CHANGELOG.md](CHANGELOG.md) — version history. Release notes are sourced from this file.
 
+## Roadmap
+
+The core dashboard (boards, networks, train dispatch map) is stable as of 0.7.1. The
+following **auxiliary features** are planned to improve in-game discoverability and
+onboarding — none are implemented yet; this section documents the intent so contributors
+can pick them up.
+
+### Ponder tutorials (hold W to ponder)
+
+Create ships a [Ponder](https://www.curseforge.com/minecraft/mc-mods/ponder) system that
+shows in-game tutorial scenes when the player holds W on an item/block. The plan is to
+register Ponder scenes for the Web toggle and the train dispatch map so players learn the
+mod without leaving the game.
+
+Ponder is already declared as an optional dependency (`ponder [1.0.82,)` in
+`neoforge.mods.toml`) and wired in `build.gradle` (non-jarJar — players install it
+standalone), but **no scenes are registered yet**. Planned scenes:
+
+- *Enabling the Web toggle on a Display Link* — right-click a Display Link, flip the
+  **Web: ON** button, watch the board appear on the dashboard.
+- *Reading the train dispatch map* — open `/trains.html`, interpret live train positions,
+  run a tag-based route search, and read the departure records.
+
+A new `client/ponder/` package will host `PonderStoryBoard` / `PonderScene` registrations,
+wired from `CreateWebBoard`'s constructor via `PonderRegistrationHelper.create(MOD_ID)`.
+Ponder scenes are client-only and gracefully no-op when Ponder is absent.
+
+### In-game startup notification (bottom-right toast)
+
+Today nothing in-game tells the player where to find the dashboard — the URL only appears
+*inside* the web page after they already opened it. Planned: a one-time toast (or chat
+message) shown on world join that reports the bound dashboard URL (e.g.
+`http://localhost:8080/`).
+
+The existing `ClientPlayerNetworkEvent.LoggingIn` hook in `ClientIconEvents` is the natural
+injection point. It will read the effective host/port from `ServerConfig` /
+`config/webboard-server.toml` so the message reflects the actual bind address, and will
+only fire on worlds where the local HTTP server is reachable (single-player / listen
+server).
+
+### In-game mod config (NeoForge ModConfigSpec)
+
+Configuration is currently a hand-written TOML file (`config/webboard-server.toml`) parsed
+by `ConfigLoader`, with no in-game UI — players must edit files by hand. Planned: migrate
+to NeoForge's `ModConfigSpec` and register a config screen so players can toggle
+host / port / maxWsConnections from the Mods menu.
+
+This requires a `[[config]]` entry in `neoforge.mods.toml` and a
+`IConfigScreenFactory` / `ConfigScreen` registration in `CreateWebBoard`. The existing
+`ConfigLoader` / `ServerConfig` will be kept as the persistence layer underneath the spec,
+so the file format stays backward-compatible.
+
 ## Release policy
 
 **Versions are not bumped per feature.** A new release is cut only when the maintainer

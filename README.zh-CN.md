@@ -237,6 +237,48 @@ gradle test --no-daemon
 - [docs/adr/0001-javalin-embedded.md](docs/adr/0001-javalin-embedded.md) —— 为何内嵌 Javalin。
 - [CHANGELOG.md](CHANGELOG.md) —— 版本历史。发行说明源自此文件。
 
+## 路线图
+
+核心仪表盘（看板、网络、列车调度图）在 0.7.1 已稳定。以下**辅助功能**计划用于改善游戏内
+可发现性与上手体验——目前均未实现，本节记录意图以便贡献者认领。
+
+### 思索教程（按住 W 键思索）
+
+Create 内置 [Ponder](https://www.curseforge.com/minecraft/mc-mods/ponder) 系统，玩家对物品/方块
+按住 W 键即可观看游戏内教程场景。计划为 Web 开关与列车调度图注册 Ponder 场景，让玩家无需
+离开游戏即可学会使用本模组。
+
+Ponder 已作为可选依赖在 `neoforge.mods.toml`（`ponder [1.0.82,)`）声明，并在 `build.gradle` 中
+接线（非 jarJar——玩家独立安装），但**尚未注册任何场景**。计划场景：
+
+- *在显示链路上启用 Web 开关* —— 右键显示链路，翻转 **Web: 开** 按钮，观看看板出现在仪表盘。
+- *阅读列车调度图* —— 打开 `/trains.html`，解读实时列车位置、运行基于站点标签的路径搜索、
+  查看到发记录。
+
+将新增 `client/ponder/` 包存放 `PonderStoryBoard` / `PonderScene` 注册，从 `CreateWebBoard`
+构造函数通过 `PonderRegistrationHelper.create(MOD_ID)` 接入。Ponder 场景仅客户端生效，Ponder
+缺失时静默无效。
+
+### 游戏内启动提示（右下角弹窗）
+
+目前游戏内没有任何提示告知玩家仪表盘地址——URL 只在玩家已经打开网页*之后*才出现在页面里。
+计划：在世界加入时显示一次性弹窗（或聊天消息），报告绑定的仪表盘 URL（如
+`http://localhost:8080/`）。
+
+`ClientIconEvents` 中已有的 `ClientPlayerNetworkEvent.LoggingIn` 钩子是天然注入点。它将从
+`ServerConfig` / `config/webboard-server.toml` 读取实际生效的主机/端口，使消息反映真实绑定
+地址，并仅在本地 HTTP 服务器可达的世界（单人 / 联机主机）触发。
+
+### 游戏内 mod 配置（NeoForge ModConfigSpec）
+
+当前配置是手写 TOML 文件（`config/webboard-server.toml`），由 `ConfigLoader` 解析，无游戏内
+界面——玩家必须手工编辑文件。计划：迁移到 NeoForge 的 `ModConfigSpec` 并注册配置屏幕，让
+玩家从 Mods 菜单切换 host / port / maxWsConnections。
+
+这需要在 `neoforge.mods.toml` 添加 `[[config]]` 段，并在 `CreateWebBoard` 注册
+`IConfigScreenFactory` / `ConfigScreen`。现有 `ConfigLoader` / `ServerConfig` 将作为 spec 之下
+的持久化层保留，文件格式向后兼容。
+
 ## 发行策略
 
 **版本号不随功能递增。** 仅当维护者明确要求时才剪切新版本。两次发行之间，新代码合入 `main`，
