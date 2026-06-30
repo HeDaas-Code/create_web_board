@@ -78,6 +78,16 @@ public final class BoardDatabase {
     private volatile boolean initialized = false;
     private ScheduledExecutorService flushExecutor;
 
+    /**
+     * Wall-clock ms when this server session started (captured in {@link #init()} before the
+     * file is loaded). History entries loaded from a previous session's file all have
+     * {@code ts < sessionStartMs}; {@link #loadHistory(String)} filters them out so the
+     * dashboard chart only plots points recorded in the current session. This prevents the
+     * chart from stitching together data across restarts (per v0.7.1 field feedback) and
+     * bounds the rendering cost.
+     */
+    private volatile long sessionStartMs = 0L;
+
     private BoardDatabase() {}
 
     /** One point-in-time snapshot of a board's lines, for the history view in the dashboard modal. */
@@ -95,7 +105,7 @@ public final class BoardDatabase {
             List<String> itemIds) {}
 
     /** Cap on history entries per board to keep the JSON file bounded. Oldest dropped first. */
-    private static final int HISTORY_CAP = 200;
+    private static final int HISTORY_CAP = 30;
 
     /**
      * Initialize the database -- loads the JSON file (if it exists) and starts the flush
@@ -103,6 +113,11 @@ public final class BoardDatabase {
      */
     public synchronized void init() {
         if (initialized) return;
+
+        // Capture this session's start time BEFORE loading the file: every entry persisted
+        // by a previous session carries a ts from before this moment, so loadHistory() can
+        // filter them out and the chart only sees current-session data.
+        sessionStartMs = System.currentTimeMillis();
 
         try {
             Path dbPath = Path.of(DB_PATH);
@@ -235,14 +250,22 @@ public final class BoardDatabase {
     }
 
     /**
-     * Load the history snapshots for a board (newest-last). Returns an empty list if the board
-     * isn't known or has no history. Used by the dashboard modal's "历史信息" view.
+     * Load the history snapshots for a board (newest-last), filtered to the current server
+     * session only. Entries persisted by a previous session (ts &lt; sessionStartMs) are
+     * excluded so the dashboard chart never stitches data across restarts. Returns an empty
+     * list if the board isn't known or has no current-session history.
      */
     public List<HistoryEntry> loadHistory(String name) {
         if (!initialized) return List.of();
         BoardEntry existing = entries.get(name);
         if (existing == null) return List.of();
-        return new ArrayList<>(existing.history());
+        List<HistoryEntry> all = existing.history();
+        if (all.isEmpty()) return List.of();
+        List<HistoryEntry> sessionOnly = new ArrayList<>(all.size());
+        for (HistoryEntry he : all) {
+            if (he.ts() >= sessionStartMs) sessionOnly.add(he);
+        }
+        return sessionOnly;
     }
 
     /**

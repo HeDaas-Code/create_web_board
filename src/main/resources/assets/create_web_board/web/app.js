@@ -781,7 +781,13 @@
         } else {
             const noChart = document.createElement("div");
             noChart.className = "hist-empty";
-            noChart.textContent = "（历史内容无可提取数值，下方为原始快照）";
+            // Distinguish "no numeric data at all" from "collecting — need CHART_POINTS
+            // samples this session before the chart draws".
+            const hasNumeric = list.some((he) =>
+                (he.lines || []).some((ln) => NUM_RE.test(ln)));
+            noChart.textContent = hasNumeric
+                ? "（本次启动已记录 " + list.length + " 条，折线图需积累 " + CHART_POINTS + " 个点后绘制，下方为原始快照）"
+                : "（历史内容无可提取数值，下方为原始快照）";
             frag.appendChild(noChart);
         }
 
@@ -794,11 +800,22 @@
     const NUM_RE = /-?\d+(?:\.\d+)?/;
 
     /**
+     * Charts only plot the most recent CHART_POINTS samples (sliding window) and require at
+     * least this many points before drawing — per v0.7.1 field feedback to prevent overflow
+     * and avoid stitching data across server restarts. The backend already filters history
+     * to the current session, so these are always current-session points.
+     */
+    const CHART_POINTS = 5;
+
+    /**
      * Build numeric series from history. For each line index i, collect
      * {ts, value} across all snapshots by matching the first number in lines[i].
-     * A line becomes a series only if >= 2 snapshots yield a number for it.
      * Missing values are forward-filled (and leading nulls trimmed) so lines
-     * stay continuous. Label is the line's text in the latest snapshot.
+     * stay continuous. Each series is then truncated to the most recent
+     * CHART_POINTS samples (sliding window) and only emitted once it has at
+     * least that many points — the chart waits for a full window before
+     * drawing and keeps iterating as new samples arrive. Label is the line's
+     * text in the latest snapshot.
      */
     function buildNumericSeries(list) {
         let maxLines = 0;
@@ -826,8 +843,11 @@
             let start = 0;
             while (start < points.length && points[start].value == null) start++;
             const trimmed = points.slice(start);
-            if (trimmed.length < 2) continue;
-            series.push({ label: truncate(lastLabel, 28), points: trimmed });
+            // Sliding window: keep only the most recent CHART_POINTS samples, and only
+            // emit the series once the window is full (chart waits, then iterates).
+            const pts = trimmed.slice(-CHART_POINTS);
+            if (pts.length < CHART_POINTS) continue;
+            series.push({ label: truncate(lastLabel, 28), points: pts });
         }
         return series;
     }
@@ -1226,7 +1246,9 @@
     /** Fetch each member's history, extract values per role, forward-fill missing points,
      *  and aggregate by timestamp into series: production (总应力), consumption (应力),
      *  storage (剩余应力). surplus 不再单独成线——剩余应力即存储，由 storage 成员实测值代表。
-     *  Returns [{label, points:[{ts, value}]}, ...] (only series with >= 2 points). */
+     *  Each series is truncated to the most recent CHART_POINTS samples (sliding window)
+     *  and only emitted once it has at least that many points — same overflow guard as the
+     *  board chart. Returns [{label, points:[{ts, value}]}, ...]. */
     async function buildNetworkSeries(net) {
         const members = net.members || [];
         if (members.length === 0) return [];
@@ -1286,10 +1308,15 @@
         });
 
         const series = [];
-        if (prodPts.length >= 2) series.push({ label: STRESS_LABELS.total, points: prodPts });
-        if (consPts.length >= 2) series.push({ label: STRESS_LABELS.used, points: consPts });
+        // Sliding window: keep only the most recent CHART_POINTS samples per role, and only
+        // emit a series once its window is full (chart waits, then iterates).
+        const prodWin = prodPts.slice(-CHART_POINTS);
+        const consWin = consPts.slice(-CHART_POINTS);
+        const storWin = storPts.slice(-CHART_POINTS);
+        if (prodWin.length >= CHART_POINTS) series.push({ label: STRESS_LABELS.total, points: prodWin });
+        if (consWin.length >= CHART_POINTS) series.push({ label: STRESS_LABELS.used, points: consWin });
         // 剩余应力 = storage 成员实测累加（不再用 surplus=产−消 派生线）。
-        if (storPts.length >= 2) series.push({ label: STRESS_LABELS.remaining, points: storPts });
+        if (storWin.length >= CHART_POINTS) series.push({ label: STRESS_LABELS.remaining, points: storWin });
         return series;
     }
 
